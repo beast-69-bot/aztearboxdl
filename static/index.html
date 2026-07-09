@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Diskwala Link Extractor & Downloader - Direct High-Speed Downloads</title>
+    <meta name="description" content="Extract direct download and streaming links from Diskwala share URLs instantly. Skip wait times, bypass cryptography, and download at maximum speed.">
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Custom Style -->
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="stars-container"></div>
+    <div class="glow-bg"></div>
+
+    <main class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="logo-area">
+                <i class="fa-solid fa-cloud-arrow-down logo-icon"></i>
+                <span class="logo-text">Disk<span class="highlight">wala</span></span>
+            </div>
+            <h1 class="main-title">Direct Link Extractor</h1>
+            <p class="subtitle">Bypass crypt protection and extract raw high-speed download links instantly.</p>
+        </header>
+
+        <!-- Input Section -->
+        <section class="card glass input-card">
+            <form id="extract-form">
+                <div class="input-wrapper">
+                    <i class="fa-solid fa-link input-icon"></i>
+                    <input type="text" id="url-input" placeholder="Paste your Diskwala link here (e.g. https://www.diskwala.com/app/file_id)..." required autocomplete="off">
+                </div>
+                <button type="submit" id="submit-btn" class="btn primary-btn">
+                    <span>Extract Link</span>
+                    <i class="fa-solid fa-wand-magic-sparkles btn-icon"></i>
+                </button>
+            </form>
+        </section>
+
+        <!-- Loading / Progress Section -->
+        <section id="loader-section" class="card glass loader-card hidden">
+            <div class="loader-content">
+                <div class="spinner-container">
+                    <div class="double-spinner"></div>
+                    <i class="fa-solid fa-fingerprint crypto-icon animate-pulse"></i>
+                </div>
+                <h3 class="loader-title">Initiating Extraction</h3>
+                
+                <!-- Animated Progress steps -->
+                <div class="progress-steps">
+                    <div class="step active" id="step-1">
+                        <i class="fa-solid fa-circle-notch fa-spin step-status"></i>
+                        <span>Launching headless emulator...</span>
+                    </div>
+                    <div class="step" id="step-2">
+                        <i class="fa-regular fa-circle step-status"></i>
+                        <span>Loading Diskwala web application...</span>
+                    </div>
+                    <div class="step" id="step-3">
+                        <i class="fa-regular fa-circle step-status"></i>
+                        <span>Bypassing AppiCrypt WASM protection...</span>
+                    </div>
+                    <div class="step" id="step-4">
+                        <i class="fa-regular fa-circle step-status"></i>
+                        <span>Capturing direct API credentials...</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Error Section -->
+        <section id="error-section" class="card glass error-card hidden">
+            <div class="error-content">
+                <i class="fa-solid fa-triangle-exclamation error-icon"></i>
+                <h3 class="error-title">Extraction Failed</h3>
+                <p id="error-message" class="error-text">Something went wrong during the extraction process.</p>
+                <button id="retry-btn" class="btn secondary-btn">Try Again</button>
+            </div>
+        </section>
+
+        <!-- Results Card -->
+        <section id="result-section" class="card glass result-card hidden">
+            <div class="result-grid">
+                <!-- Left: Thumbnail / File Preview -->
+                <div class="file-preview-area">
+                    <div class="thumbnail-wrapper" id="file-thumbnail-container">
+                        <!-- Image or icon dynamically inserted -->
+                    </div>
+                </div>
+
+                <!-- Right: Metadata & Download Actions -->
+                <div class="file-details-area">
+                    <div class="badge" id="file-badge">Ready</div>
+                    <h2 class="file-title" id="file-title">file_name.mp4</h2>
+                    
+                    <div class="metadata-table">
+                        <div class="metadata-row">
+                            <span class="meta-label"><i class="fa-solid fa-database"></i> Size</span>
+                            <span class="meta-value" id="file-size">124.5 MB</span>
+                        </div>
+                        <div class="metadata-row">
+                            <span class="meta-label"><i class="fa-solid fa-file-code"></i> Type</span>
+                            <span class="meta-value" id="file-type">video/mp4</span>
+                        </div>
+                        <div class="metadata-row">
+                            <span class="meta-label"><i class="fa-solid fa-clock"></i> Expires</span>
+                            <span class="meta-value text-warning">~ 10 minutes</span>
+                        </div>
+                    </div>
+
+                    <div class="actions-area">
+                        <a href="#" id="download-btn" class="btn success-btn" target="_blank">
+                            <i class="fa-solid fa-download"></i>
+                            <span>Direct Download</span>
+                        </a>
+                        <button id="copy-btn" class="btn secondary-btn">
+                            <i class="fa-solid fa-copy"></i>
+                            <span>Copy Stream Link</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="app-footer">
+        <p>&copy; 2026 Diskwala Link Extractor. For educational purposes only.</p>
+    </footer>
+
+    <!-- Application Script -->
+    <script src="/static/app.js"></script>
+</body>
+</html>
