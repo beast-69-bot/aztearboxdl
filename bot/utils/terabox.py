@@ -90,7 +90,7 @@ def check_ndus_cookie() -> bool:
     
     # Try calling the account space API first
     try:
-        api_url = "https://www.1024tera.com/api/box/space"
+        api_url = "https://dm.1024tera.com/api/box/space"
         resp = session.get(api_url, headers=HEADERS, timeout=8)
         if resp.status_code == 200:
             data = resp.json()
@@ -102,7 +102,7 @@ def check_ndus_cookie() -> bool:
 
     # Fallback check: Request the main sharing link page and verify if we get redirected to a verify/login page
     try:
-        test_url = "https://www.1024tera.com/sharing/link?surl=tKDPsB5RNnjdWLwoLcCFyg"
+        test_url = "https://dm.1024tera.com/sharing/link?surl=tKDPsB5RNnjdWLwoLcCFyg"
         resp = session.get(test_url, headers=HEADERS, timeout=8, allow_redirects=False)
         if resp.status_code in [301, 302]:
             redirect_target = resp.headers.get("Location", "").lower()
@@ -133,7 +133,7 @@ def get_terabox_info(surl: str) -> dict | None:
     session = curl_requests.Session(impersonate="chrome110")
     session.cookies.update({"ndus": NDUS_COOKIE})
     
-    first_url = f"https://www.1024tera.com/sharing/link?surl={short}"
+    first_url = f"https://dm.1024tera.com/sharing/link?surl={short}"
     try:
         response = session.get(first_url, headers=HEADERS, timeout=12)
         
@@ -147,7 +147,7 @@ def get_terabox_info(surl: str) -> dict | None:
                 print("Direct VPS IP extraction successful!")
                 
                 # Fetch share list
-                api_url = "https://www.1024tera.com/share/list"
+                api_url = "https://dm.1024tera.com/share/list"
                 params = {
                     "app_id": "250528",
                     "jsToken": jsToken,
@@ -156,13 +156,13 @@ def get_terabox_info(surl: str) -> dict | None:
                     "root": "1"
                 }
                 api_headers = {
-                    "Host": "www.1024tera.com",
+                    "Host": "dm.1024tera.com",
                     "User-Agent": HEADERS["User-Agent"],
                     "Accept": "application/json, text/plain, */*",
                     "Accept-Language": "en-US,en;q=0.9",
                     "X-Requested-With": "XMLHttpRequest",
-                    "Referer": f"https://www.1024tera.com/sharing/link?surl={short}&clearCache=1",
-                    "Origin": "https://www.1024tera.com"
+                    "Referer": f"https://dm.1024tera.com/sharing/link?surl={short}&clearCache=1",
+                    "Origin": "https://dm.1024tera.com"
                 }
                 
                 api_response = session.get(api_url, params=params, headers=api_headers, timeout=12)
@@ -213,7 +213,7 @@ def get_terabox_info(surl: str) -> dict | None:
             jsToken = match.group(1)
             
             # API Call
-            api_url = "https://www.1024tera.com/share/list"
+            api_url = "https://dm.1024tera.com/share/list"
             params = {
                 "app_id": "250528",
                 "jsToken": jsToken,
@@ -222,13 +222,13 @@ def get_terabox_info(surl: str) -> dict | None:
                 "root": "1"
             }
             api_headers = {
-                "Host": "www.1024tera.com",
+                "Host": "dm.1024tera.com",
                 "User-Agent": HEADERS["User-Agent"],
                 "Accept": "application/json, text/plain, */*",
                 "Accept-Language": "en-US,en;q=0.9",
                 "X-Requested-With": "XMLHttpRequest",
-                "Referer": f"https://www.1024tera.com/sharing/link?surl={short}&clearCache=1",
-                "Origin": "https://www.1024tera.com"
+                "Referer": f"https://dm.1024tera.com/sharing/link?surl={short}&clearCache=1",
+                "Origin": "https://dm.1024tera.com"
             }
             
             api_response = session.get(api_url, params=params, headers=api_headers, timeout=10)
