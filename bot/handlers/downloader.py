@@ -106,6 +106,10 @@ async def handle_link(client, message: Message):
         "⚡ VPS Hosted | 🚫 No Ads | ♾ Unlimited Speed\n"
         "<i>Powered by AZ Network</i>"
     )
+    
+    thumb_path = os.path.join(os.path.dirname(__file__), "..", "utils", "thumbnail.jpg")
+    if not os.path.exists(thumb_path):
+        thumb_path = None
 
     try:
         await client.send_video(
@@ -113,6 +117,7 @@ async def handle_link(client, message: Message):
             video=local_path,
             caption=caption,
             supports_streaming=True,
+            thumb=thumb_path,
             progress=progress_callback,
             progress_args=(status, "Uploading to Telegram", filename, upload_start),
         )
