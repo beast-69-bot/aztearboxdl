@@ -61,10 +61,70 @@ def get_terabox_data(surl: str):
     return api_response.json()
 
 
-async def download_file(dlink, filename, message: Message):
+import time
+import math
+
+# Progress Bar Config
+last_update_time = {}
+
+def get_progress_bar(current, total):
+    percentage = current * 100 / total
+    progress = int(percentage / 5)
+    bar = "█" * progress + "░" * (20 - progress)
+    return f"[{bar}] {percentage:.1f}%"
+
+def format_bytes(size):
+    if not size:
+        return "0 B"
+    power = 2 ** 10
+    n = 0
+    power_labels = {0: 'B', 1: 'KB', 2: 'MB', 3: 'GB', 4: 'TB'}
+    while size > power:
+        size /= power
+        n += 1
+    return f"{size:.2f} {power_labels[n]}"
+
+async def progress_callback(current, total, message: Message, action: str, filename: str, start_time: float):
+    global last_update_time
+    msg_id = message.id
+    
+    # Update only every 3 seconds to avoid FloodWait
+    now = time.time()
+    if msg_id in last_update_time and (now - last_update_time[msg_id]) < 3.0:
+        if current != total:
+            return
+            
+    last_update_time[msg_id] = now
+    
+    elapsed_time = now - start_time
+    if elapsed_time == 0:
+        elapsed_time = 0.1
+    speed = current / elapsed_time
+    
+    # Prevent division by zero for ETA
+    if speed == 0:
+        speed = 1
+        
+    eta = (total - current) / speed
+    
+    text = (
+        f"⏳ **{action}...**\n"
+        f"📁 `{filename}`\n\n"
+        f"{get_progress_bar(current, total)}\n"
+        f"🚀 **Speed:** {format_bytes(speed)}/s\n"
+        f"📦 **Size:** {format_bytes(current)} / {format_bytes(total)}\n"
+        f"⏱ **ETA:** {int(eta)}s"
+    )
+    
+    try:
+        await message.edit_text(text)
+    except Exception:
+        pass
+
+
+async def download_file(dlink, filename, message: Message, total_size: int):
     """
-    Downloads the file from TeraBox to the VPS local storage in chunks.
-    Returns the local filepath.
+    Downloads the file from TeraBox to the VPS local storage in chunks with progress.
     """
     session = curl_requests.Session(impersonate="chrome110")
     session.cookies.update({"ndus": NDUS_COOKIE})
@@ -77,18 +137,26 @@ async def download_file(dlink, filename, message: Message):
     if req.status_code != 200:
         raise Exception(f"Failed to connect to TeraBox download server. Status: {req.status_code}")
 
-    # Generate a unique path to avoid collisions
     filepath = f"downloads/{uuid.uuid4().hex[:8]}_{filename}"
     os.makedirs("downloads", exist_ok=True)
 
-    # Status update
-    await message.edit_text(f"⏳ **Downloading to VPS Server...**\n📁 File: `{filename}`")
-
-    # Download in chunks
+    start_time = time.time()
+    downloaded = 0
+    
     with open(filepath, 'wb') as f:
-        for chunk in req.iter_content(chunk_size=1024 * 1024): # 1MB chunks
+        for chunk in req.iter_content(chunk_size=1024 * 1024):
             if chunk:
                 f.write(chunk)
+                downloaded += len(chunk)
+                # Update download progress
+                await progress_callback(
+                    current=downloaded,
+                    total=total_size,
+                    message=message,
+                    action="Downloading to VPS",
+                    filename=filename,
+                    start_time=start_time
+                )
                 
     return filepath
 
@@ -134,11 +202,8 @@ async def handle_link(client, message: Message):
         
     surl = surl_match.group(1)
     
-    # Progress: Validating
     status_msg = await message.reply_text("🔍 Validating Link...")
     await asyncio.sleep(0.5)
-    
-    # Progress: Extracting
     await status_msg.edit_text("📥 Extracting Stream...")
 
     try:
@@ -150,24 +215,22 @@ async def handle_link(client, message: Message):
         file_info = data["list"][0]
         filename = file_info.get("server_filename", "Unknown_Video.mp4")
         dlink = file_info.get("dlink")
-        size_mb = int(file_info.get("size", 0)) / (1024 * 1024)
+        total_size = int(file_info.get("size", 0))
+        size_mb = total_size / (1024 * 1024)
         
         if size_mb > 2000:
             await status_msg.edit_text("❌ Error: File is larger than 2GB (Telegram Limit).")
             return
 
-        # Progress: Generating
         await status_msg.edit_text("⚡ Generating Download...")
         await asyncio.sleep(0.5)
         
-        # 1. Download to VPS
-        await status_msg.edit_text(f"⏳ **Downloading to VPS Server...**\n📁 `{filename}`")
-        local_filepath = await download_file(dlink, filename, status_msg)
+        # 1. Download to VPS (with progress)
+        local_filepath = await download_file(dlink, filename, status_msg, total_size)
         
-        # 2. Upload to Telegram
-        await status_msg.edit_text(f"🚀 **Uploading to Telegram...**\n📁 `{filename}`")
+        # 2. Upload to Telegram (with progress)
+        upload_start_time = time.time()
         
-        # Premium AZ Network Caption
         caption = (
             "━━━━━━━━━━━━━━━━━━\n\n"
             "⚡ **AZ STREAM**\n\n"
@@ -186,12 +249,14 @@ async def handle_link(client, message: Message):
             chat_id=message.chat.id,
             video=local_filepath,
             caption=caption,
-            supports_streaming=True
+            supports_streaming=True,
+            progress=progress_callback,
+            progress_args=(status_msg, "Uploading to Telegram", filename, upload_start_time)
         )
         
         await status_msg.delete()
         
-        # 3. Cleanup VPS storage
+        # Cleanup VPS storage
         if os.path.exists(local_filepath):
             os.remove(local_filepath)
 
