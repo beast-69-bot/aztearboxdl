@@ -124,59 +124,39 @@ async def progress_callback(current, total, message: Message, action: str, filen
 
 async def download_file(dlink, filename, message: Message, total_size: int):
     """
-    Downloads the file from TeraBox to the VPS local storage using aria2c (16 connections).
+    Downloads the file from TeraBox to the VPS local storage in chunks with progress.
     """
+    session = curl_requests.Session(impersonate="chrome110")
+    session.cookies.update({"ndus": NDUS_COOKIE})
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/145.0.0.0 Safari/537.36",
+        "Accept": "*/*"
+    }
+    
+    req = session.get(dlink, headers=headers, stream=True)
+    if req.status_code != 200:
+        raise Exception(f"Failed to connect to TeraBox download server. Status: {req.status_code}")
+
     filepath = f"downloads/{uuid.uuid4().hex[:8]}_{filename}"
     os.makedirs("downloads", exist_ok=True)
 
     start_time = time.time()
+    downloaded = 0
     
-    cmd = [
-        "aria2c",
-        "--console-log-level=notice",
-        "--summary-interval=3",
-        "--max-connection-per-server=16",
-        "--split=16",
-        "--min-split-size=1M",
-        f"--dir=.",
-        f"--out={filepath}",
-        f"--header=Cookie: ndus={NDUS_COOKIE}",
-        f"--header=User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/145.0.0.0 Safari/537.36",
-        dlink
-    ]
-    
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT
-    )
-    
-    while True:
-        line = await process.stdout.readline()
-        if not line:
-            break
-            
-        line_str = line.decode('utf-8', errors='ignore').strip()
-        
-        # Aria2c output example: [#123456 12MiB/100MiB(12%) CN:16 DL:4MiB ETA:22s]
-        match = re.search(r'\((\d+)%\)', line_str)
-        if match:
-            percentage = int(match.group(1))
-            current = (percentage / 100) * total_size
-            
-            await progress_callback(
-                current=current,
-                total=total_size,
-                message=message,
-                action="Downloading to VPS (Aria2 16x)",
-                filename=filename,
-                start_time=start_time
-            )
-            
-    await process.wait()
-    
-    if process.returncode != 0:
-        raise Exception(f"Aria2c download failed with exit code {process.returncode}")
+    with open(filepath, 'wb') as f:
+        for chunk in req.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                f.write(chunk)
+                downloaded += len(chunk)
+                # Update download progress
+                await progress_callback(
+                    current=downloaded,
+                    total=total_size,
+                    message=message,
+                    action="Downloading to VPS",
+                    filename=filename,
+                    start_time=start_time
+                )
                 
     return filepath
 
