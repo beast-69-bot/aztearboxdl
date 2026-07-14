@@ -107,8 +107,14 @@ async def handle_link(client, message: Message):
         "<i>Powered by</i> @az_hawas_adda 🔥"
     )
     
-    thumb_path = os.path.join(os.path.dirname(__file__), "..", "utils", "thumbnail.jpg")
-    if not os.path.exists(thumb_path):
+    # Use PNG first to avoid JPEG compression quality loss
+    thumb_png = os.path.join(os.path.dirname(__file__), "..", "utils", "thumbnail.png")
+    thumb_jpg = os.path.join(os.path.dirname(__file__), "..", "utils", "thumbnail.jpg")
+    if os.path.exists(thumb_png):
+        thumb_path = thumb_png
+    elif os.path.exists(thumb_jpg):
+        thumb_path = thumb_jpg
+    else:
         thumb_path = None
 
     try:
