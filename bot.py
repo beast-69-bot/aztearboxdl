@@ -12,7 +12,7 @@ from pyrogram.types import Message
 API_ID = 37984186
 API_HASH = "f1525a5c408ab147efe4c888f4b08c1a"
 BOT_TOKEN = "7899193078:AAFvbxq8AqijIoLu3eJHv5GCXk1x8byqITA"
-NDUS_COOKIE = "YSkeXKjteHuioD6j7V0PlO3TC8wHJK1hA7q9yu5o"
+NDUS_COOKIE = "Yzdw9XNpeHui_mvplw5zEnlklVr5_nGZ9VutkCij"
 ADMIN_ID = 8615007714  # Hardcoded admin Telegram ID
 
 # Initialize Pyrogram Client
