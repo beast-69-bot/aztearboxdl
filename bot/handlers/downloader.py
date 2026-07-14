@@ -104,7 +104,7 @@ async def handle_link(client, message: Message):
         f"▸ <b>ꜱɪᴢᴇ</b>: <code>{size_mb:.2f} MB</code>\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "⚡ VPS Hosted | 🚫 No Ads | ♾ Unlimited Speed\n"
-        "<i>Powered by AZ Network</i>"
+        "<i>Powered by</i> @az_hawas_adda 🔥"
     )
     
     thumb_path = os.path.join(os.path.dirname(__file__), "..", "utils", "thumbnail.jpg")
