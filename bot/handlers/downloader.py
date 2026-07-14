@@ -23,6 +23,31 @@ async def handle_link(client, message: Message):
         )
         return
 
+    user_id = message.from_user.id
+    
+    # Simple in-memory limit tracking
+    current_date = time.strftime("%Y-%m-%d")
+    
+    # Initialize trackers if not present
+    if not hasattr(app, "user_limits"):
+        app.user_limits = {}
+    if not hasattr(app, "limit_date") or app.limit_date != current_date:
+        app.user_limits = {}
+        app.limit_date = current_date
+        
+    # Check limit if the user is not the admin
+    if user_id != ADMIN_ID:
+        user_usage = app.user_limits.get(user_id, 0)
+        if user_usage >= 10:
+            limit_msg = (
+                "🚨 **Daily Limit Reached!**\n\n"
+                "You have used your free limit of **10 links per day**.\n\n"
+                "💸 Want unlimited links & faster processing?\n"
+                "Go to **@azofficialmainbot** to buy Premium! ⭐"
+            )
+            await message.reply_text(limit_msg)
+            return
+
     url = urls[0]
     match = re.search(r"/s/([A-Za-z0-9_-]+)", url)
     if not match:
@@ -31,6 +56,7 @@ async def handle_link(client, message: Message):
 
     surl = match.group(1)
     status = await message.reply_text("🔍 Validating link...")
+
 
     # ── Fetch file info ──────────────────────────────────────────────
     await status.edit_text("📥 Extracting file info...")
@@ -82,6 +108,12 @@ async def handle_link(client, message: Message):
             progress_args=(status, "Uploading to Telegram", filename, upload_start),
         )
         await status.delete()
+        
+        # Increment usage count upon successful completion
+        if user_id != ADMIN_ID:
+            app.user_limits[user_id] = app.user_limits.get(user_id, 0) + 1
+            remaining = 10 - app.user_limits[user_id]
+            await message.reply_text(f"✅ **File processed successfully!**\nRemaining Free Links for Today: **{remaining}/10**")
     except Exception as e:
         await status.edit_text(f"⚠️ Upload failed: {e}")
     finally:
