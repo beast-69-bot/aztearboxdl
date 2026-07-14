@@ -139,7 +139,7 @@ def get_terabox_info(surl: str) -> dict | None:
         
         # Check if we were redirected to a login/verify page or hit verify wall
         if "verify" in response.url.lower() or "login" in response.url.lower() or "need verify" in response.text.lower() or '"errno":400141' in response.text:
-            print("Direct connection hit verification/login wall.")
+            print(f"Direct connection hit verification/login wall. Final URL: {response.url}, Status Code: {response.status_code}")
         else:
             match = re.search(r'fn%28%22(.*?)%22%29', response.text)
             if match:
