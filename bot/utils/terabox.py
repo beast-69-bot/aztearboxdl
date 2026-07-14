@@ -3,6 +3,8 @@ import uuid
 import re
 import time
 import random
+import asyncio
+from urllib.parse import urlparse
 from curl_cffi import requests as curl_requests
 from config import NDUS_COOKIE
 from bot.utils.progress import progress_callback
@@ -21,6 +23,102 @@ HEADERS = {
 
 vps_cached_proxies = []
 
+def _origin_from_url(url: str, fallback: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return fallback
+
+def _share_list_request(session, origin: str, short: str, js_token: str, timeout: int):
+    parsed = urlparse(origin)
+    host = parsed.netloc
+    api_url = f"{origin}/share/list"
+    params = {
+        "app_id": "250528",
+        "jsToken": js_token,
+        "site_referer": "https://www.terabox.app/",
+        "shorturl": short,
+        "root": "1"
+    }
+    api_headers = {
+        "Host": host,
+        "User-Agent": HEADERS["User-Agent"],
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": f"{origin}/sharing/link?surl={short}&clearCache=1",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": origin
+    }
+    print(f"Fetching share list from {api_url} ...")
+    return session.get(api_url, params=params, headers=api_headers, timeout=timeout)
+
+def _item_from_share_list_response(api_response) -> dict | None:
+    try:
+        data = api_response.json()
+    except Exception as err:
+        print(f"Share list JSON parse failed: HTTP {api_response.status_code}: {err}")
+        return None
+
+    if data.get("errno") != 0 or not data.get("list"):
+        print(f"Share list failed: HTTP {api_response.status_code}, errno={data.get('errno')}, errmsg={data.get('errmsg')}")
+        return None
+
+    item = data["list"][0]
+    dlink = item.get("dlink")
+    if not dlink:
+        print("Share list returned an item but no dlink.")
+        return None
+
+    return {
+        "filename": item.get("server_filename", "video.mp4"),
+        "size": int(item.get("size", 0)),
+        "dlink": dlink,
+    }
+
+def check_ndus_cookie() -> bool:
+    """
+    Verifies if the configured NDUS_COOKIE is valid and active.
+    Returns True if valid, False otherwise.
+    """
+    if not NDUS_COOKIE:
+        print("❌ Error: NDUS_COOKIE is not configured in your .env file!")
+        return False
+
+    session = curl_requests.Session(impersonate="chrome110")
+    session.cookies.update({"ndus": NDUS_COOKIE})
+    
+    # Try calling the account space API first
+    try:
+        api_url = "https://www.1024tera.com/api/box/space"
+        resp = session.get(api_url, headers=HEADERS, timeout=8)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("errno") == 0:
+                print("✅ NDUS_COOKIE is VALID (Space info retrieved successfully).")
+                return True
+    except Exception:
+        pass
+
+    # Fallback check: Request the main sharing link page and verify if we get redirected to a verify/login page
+    try:
+        test_url = "https://www.1024tera.com/sharing/link?surl=tKDPsB5RNnjdWLwoLcCFyg"
+        resp = session.get(test_url, headers=HEADERS, timeout=8, allow_redirects=False)
+        if resp.status_code in [301, 302]:
+            redirect_target = resp.headers.get("Location", "").lower()
+            if "verify" in redirect_target or "login" in redirect_target:
+                print("❌ NDUS_COOKIE is INVALID/EXPIRED (Redirected to login/verify page).")
+                return False
+        if "need verify" in resp.text.lower() or '"errno":400141' in resp.text:
+            print("❌ NDUS_COOKIE is INVALID/EXPIRED (Hit verify wall).")
+            return False
+            
+        print("✅ NDUS_COOKIE appears VALID (Sharing page accessed without login/verify redirect).")
+        return True
+    except Exception as e:
+        print(f"⚠️ NDUS_COOKIE validation connection failed: {e}")
+        return False
+
 def get_terabox_info(surl: str) -> dict | None:
     """
     Fetches file metadata from TeraBox using the public share URL ID.
@@ -35,7 +133,9 @@ def get_terabox_info(surl: str) -> dict | None:
     session = curl_requests.Session(impersonate="chrome110")
     session.cookies.update({"ndus": NDUS_COOKIE})
     
-    first_url = f"https://www.1024tera.com/sharing/link?surl={short}"
+    first_origin = "https://www.1024tera.com"
+    first_url = f"{first_origin}/sharing/link?surl={short}"
+    page_origin = first_origin
     try:
         # Disable redirects to avoid redirection loop (Max 30 redirects exceeded)
         response = session.get(first_url, headers=HEADERS, timeout=12, allow_redirects=False)
@@ -46,42 +146,19 @@ def get_terabox_info(surl: str) -> dict | None:
             print(f"Direct connection got redirect: {response.status_code} -> {redirect_target}")
             # If not sending to verify page, follow it once
             if "verify" not in redirect_target.lower():
+                page_origin = _origin_from_url(redirect_target, page_origin)
                 response = session.get(redirect_target, headers=HEADERS, timeout=12, allow_redirects=False)
         
         if "need verify" not in response.text.lower() and '"errno":400141' not in response.text:
             match = re.search(r'fn%28%22(.*?)%22%29', response.text)
             if match:
                 jsToken = match.group(1)
-                print("Direct VPS IP extraction successful!")
-                
-                # Fetch share list
-                api_url = "https://www.1024tera.com/share/list"
-                params = {
-                    "app_id": "250528",
-                    "jsToken": jsToken,
-                    "site_referer": "https://www.terabox.app/",
-                    "shorturl": short,
-                    "root": "1"
-                }
-                api_headers = {
-                    "Host": "www.1024tera.com",
-                    "User-Agent": HEADERS["User-Agent"],
-                    "Accept": "application/json, text/plain, */*",
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "X-Requested-With": "XMLHttpRequest",
-                    "Referer": f"https://www.1024tera.com/sharing/link?surl={short}&clearCache=1",
-                    "Origin": "https://www.1024tera.com"
-                }
-                
-                api_response = session.get(api_url, params=params, headers=api_headers, timeout=12)
-                data = api_response.json()
-                if data.get("errno") == 0 and data.get("list"):
-                    item = data["list"][0]
-                    return {
-                        "filename": item.get("server_filename", "video.mp4"),
-                        "size": int(item.get("size", 0)),
-                        "dlink": item.get("dlink"),
-                    }
+                print("Direct VPS page token extraction successful!")
+                api_response = _share_list_request(session, page_origin, short, jsToken, timeout=12)
+                item = _item_from_share_list_response(api_response)
+                if item:
+                    print("Direct VPS IP extraction successful!")
+                    return item
     except Exception as e:
         print(f"Direct VPS IP extraction failed due to error: {e}. Moving to proxy fallback...")
 
@@ -110,10 +187,12 @@ def get_terabox_info(surl: str) -> dict | None:
         
         try:
             # Disable redirect loop on proxy queries too
+            page_origin = first_origin
             response = session.get(first_url, headers=HEADERS, timeout=8, allow_redirects=False)
             if response.status_code in [301, 302]:
                 redirect_target = response.headers.get("Location", "")
                 if "verify" not in redirect_target.lower():
+                    page_origin = _origin_from_url(redirect_target, page_origin)
                     response = session.get(redirect_target, headers=HEADERS, timeout=8, allow_redirects=False)
                     
             if "need verify" in response.text.lower() or '"errno":400141' in response.text:
@@ -124,35 +203,11 @@ def get_terabox_info(surl: str) -> dict | None:
             if not match:
                 continue
             jsToken = match.group(1)
-            
-            # API Call
-            api_url = "https://www.1024tera.com/share/list"
-            params = {
-                "app_id": "250528",
-                "jsToken": jsToken,
-                "site_referer": "https://www.terabox.app/",
-                "shorturl": short,
-                "root": "1"
-            }
-            api_headers = {
-                "Host": "www.1024tera.com",
-                "User-Agent": HEADERS["User-Agent"],
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "en-US,en;q=0.9",
-                "X-Requested-With": "XMLHttpRequest",
-                "Referer": f"https://www.1024tera.com/sharing/link?surl={short}&clearCache=1",
-                "Origin": "https://www.1024tera.com"
-            }
-            
-            api_response = session.get(api_url, params=params, headers=api_headers, timeout=8)
-            data = api_response.json()
-            if data.get("errno") == 0 and data.get("list"):
-                item = data["list"][0]
-                return {
-                    "filename": item.get("server_filename", "video.mp4"),
-                    "size": int(item.get("size", 0)),
-                    "dlink": item.get("dlink"),
-                }
+
+            api_response = _share_list_request(session, page_origin, short, jsToken, timeout=8)
+            item = _item_from_share_list_response(api_response)
+            if item:
+                return item
         except Exception:
             if selected_proxy in vps_cached_proxies:
                 vps_cached_proxies.remove(selected_proxy)
@@ -173,25 +228,43 @@ async def download_file(dlink: str, filename: str, message, total_size: int) -> 
         "Accept": "*/*"
     }
 
-    req = session.get(dlink, headers=headers, stream=True)
+    print(f"Connecting to download link: {dlink} ...")
+    req = await asyncio.to_thread(
+        session.get, dlink, headers=headers, stream=True, timeout=20
+    )
     if req.status_code != 200:
         raise Exception(f"TeraBox server error: HTTP {req.status_code}")
 
+    print("Connection established. Beginning file download stream...")
     start_time = time.time()
     downloaded = 0
 
-    with open(filepath, "wb") as f:
-        for chunk in req.iter_content(chunk_size=1024 * 1024):
-            if chunk:
-                f.write(chunk)
-                downloaded += len(chunk)
-                await progress_callback(
-                    current=downloaded,
-                    total=total_size,
-                    message=message,
-                    action="Downloading to VPS",
-                    filename=filename,
-                    start_time=start_time,
-                )
+    iterator = req.iter_content(chunk_size=1024 * 1024)
 
+    def get_next_chunk(it):
+        try:
+            return next(it)
+        except StopIteration:
+            return None
+        except Exception as err:
+            print(f"Error reading chunk: {err}")
+            raise err
+
+    with open(filepath, "wb") as f:
+        while True:
+            chunk = await asyncio.to_thread(get_next_chunk, iterator)
+            if chunk is None:
+                break
+            f.write(chunk)
+            downloaded += len(chunk)
+            await progress_callback(
+                current=downloaded,
+                total=total_size,
+                message=message,
+                action="Downloading to VPS",
+                filename=filename,
+                start_time=start_time,
+            )
+
+    print(f"File download completed successfully: {filepath}")
     return filepath

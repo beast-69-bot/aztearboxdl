@@ -70,7 +70,8 @@ async def handle_link(client, message: Message):
 
     # ── Fetch file info ──────────────────────────────────────────────
     await status.edit_text("<b>📥 ᴇxᴛʀᴀᴄᴛɪɴɢ ɪɴꜰᴏ...</b>")
-    info = get_terabox_info(surl)
+    import asyncio
+    info = await asyncio.to_thread(get_terabox_info, surl)
 
     if not info:
         await status.edit_text("<b>✖️ ᴇxᴛʀᴀᴄᴛɪᴏɴ ꜰᴀɪʟᴇᴅ</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\nFile may be deleted or set to private.")
