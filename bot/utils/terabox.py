@@ -1,10 +1,10 @@
 import os
 import uuid
+import re
 import time
 from curl_cffi import requests as curl_requests
 from config import NDUS_COOKIE
 from bot.utils.progress import progress_callback
-
 
 HEADERS = {
     "User-Agent": (
@@ -13,22 +13,50 @@ HEADERS = {
     )
 }
 
-
 def get_terabox_info(surl: str) -> dict | None:
     """
     Fetches file metadata from TeraBox using the public share URL ID.
-    Returns a dict with filename, size, and dlink, or None on failure.
+    Uses the working two-step API flow (getting jsToken first, then listing).
     """
     short = surl[1:] if surl.startswith("1") else surl
-    api_url = (
-        f"https://www.1024tera.com/api/shorturlinfo?shorturl={short}"
-        f"&root=1&channel=dubox&clienttype=0&web=1&dp-logid=0"
-    )
+    session = curl_requests.Session(impersonate="chrome110")
+    session.cookies.update({"ndus": NDUS_COOKIE})
+
+    # Step 1: Request sharing/link page to extract jsToken
+    first_url = f"https://dm.terabox.app/sharing/link?surl={short}"
     try:
-        session = curl_requests.Session(impersonate="chrome110")
-        session.cookies.update({"ndus": NDUS_COOKIE})
-        resp = session.get(api_url, headers=HEADERS, timeout=15)
-        data = resp.json()
+        response = session.get(first_url, headers=HEADERS, timeout=15)
+        match = re.search(r'fn%28%22(.*?)%22%29', response.text)
+        if not match:
+            return None
+        jsToken = match.group(1)
+    except Exception:
+        return None
+
+    # Step 2: Query share/list API using the token
+    api_url = "https://dm.terabox.app/share/list"
+    params = {
+        "app_id": "250528",
+        "jsToken": jsToken,
+        "site_referer": "https://www.terabox.app/",
+        "shorturl": short,
+        "root": "1"
+    }
+
+    api_headers = {
+        "Host": "dm.terabox.app",
+        "User-Agent": HEADERS["User-Agent"],
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": f"https://dm.terabox.app/sharing/link?surl={short}&clearCache=1",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": "https://dm.terabox.app"
+    }
+
+    try:
+        api_response = session.get(api_url, params=params, headers=api_headers, timeout=15)
+        data = api_response.json()
         if data.get("errno") != 0 or not data.get("list"):
             return None
         item = data["list"][0]
@@ -39,7 +67,6 @@ def get_terabox_info(surl: str) -> dict | None:
         }
     except Exception:
         return None
-
 
 async def download_file(dlink: str, filename: str, message, total_size: int) -> str:
     """
@@ -52,7 +79,12 @@ async def download_file(dlink: str, filename: str, message, total_size: int) -> 
     session = curl_requests.Session(impersonate="chrome110")
     session.cookies.update({"ndus": NDUS_COOKIE})
 
-    req = session.get(dlink, headers=HEADERS, stream=True)
+    headers = {
+        "User-Agent": HEADERS["User-Agent"],
+        "Accept": "*/*"
+    }
+
+    req = session.get(dlink, headers=headers, stream=True)
     if req.status_code != 200:
         raise Exception(f"TeraBox server error: HTTP {req.status_code}")
 
