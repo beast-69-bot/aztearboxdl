@@ -1,0 +1,18 @@
+# Environment variables - DO NOT COMMIT
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Pyrogram session files
+*.session
+*.session-journal
+
+# Downloaded files temp folder
+downloads/
+
+# Logs
+*.log
+nohup.out

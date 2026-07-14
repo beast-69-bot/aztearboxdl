@@ -2,18 +2,22 @@ import os
 import re
 import uuid
 import asyncio
+from dotenv import load_dotenv
 from curl_cffi import requests as curl_requests
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
+# Load environment variables from .env file
+load_dotenv()
+
 # ==========================================
-# CONFIGURATION
+# CONFIGURATION (loaded from .env file)
 # ==========================================
-API_ID = 37984186
-API_HASH = "f1525a5c408ab147efe4c888f4b08c1a"
-BOT_TOKEN = "7899193078:AAFvbxq8AqijIoLu3eJHv5GCXk1x8byqITA"
-NDUS_COOKIE = "Yzdw9XNpeHui_mvplw5zEnlklVr5_nGZ9VutkCij"
-ADMIN_ID = 8615007714  # Hardcoded admin Telegram ID
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+NDUS_COOKIE = os.getenv("NDUS_COOKIE")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 # Initialize Pyrogram Client
 app = Client("terabox_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
