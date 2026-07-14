@@ -15,12 +15,16 @@ async def handle_link(client, message: Message):
     urls = re.findall(r"(https?://[^\s]+)", text)
 
     if not urls:
-        await message.reply_text(
-            "❌ **Invalid TeraBox Link**\n\n"
-            "Please send a public\n"
-            "`1024tera.com`\nor\n`terasharefile.com`\nlink.\n\n"
-            "Example:\n`https://1024tera.com/s/...`"
+        error_text = (
+            "<b>✖️ ɪɴᴠᴀʟɪᴅ ʟɪɴᴋ</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Please send a public link from:\n"
+            "▸ <code>1024tera.com</code>\n"
+            "▸ <code>terasharefile.com</code>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "<i>Example: https://1024tera.com/s/...</i>"
         )
+        await message.reply_text(error_text)
         return
 
     user_id = message.from_user.id
@@ -40,10 +44,12 @@ async def handle_link(client, message: Message):
         user_usage = app.user_limits.get(user_id, 0)
         if user_usage >= 10:
             limit_msg = (
-                "🚨 **Daily Limit Reached!**\n\n"
-                "You have used your free limit of **10 links per day**.\n\n"
+                "<b>⚑ ʟɪᴍɪᴛ ʀᴇᴀᴄʜᴇᴅ</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "You have used your free limit of <b>10 links per day</b>.\n\n"
                 "💸 Want unlimited links & faster processing?\n"
-                "Go to **@azofficialmainbot** to buy Premium! ⭐"
+                "Go to @azofficialmainbot to buy Premium! ⭐\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
             )
             await message.reply_text(limit_msg)
             return
@@ -51,19 +57,19 @@ async def handle_link(client, message: Message):
     url = urls[0]
     match = re.search(r"/s/([A-Za-z0-9_-]+)", url)
     if not match:
-        await message.reply_text("❌ Could not extract file ID. Send a valid TeraBox shortlink.")
+        await message.reply_text("<b>✖️ ᴇxᴛʀᴀᴄᴛɪᴏɴ ᴇʀʀᴏʀ</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\nCould not extract file ID. Send a valid TeraBox shortlink.")
         return
 
     surl = match.group(1)
-    status = await message.reply_text("🔍 Validating link...")
+    status = await message.reply_text("<b>🔍 ᴠᴀʟɪᴅᴀᴛɪɴɢ ʟɪɴᴋ...</b>")
 
 
     # ── Fetch file info ──────────────────────────────────────────────
-    await status.edit_text("📥 Extracting file info...")
+    await status.edit_text("<b>📥 ᴇxᴛʀᴀᴄᴛɪɴɢ ɪɴꜰᴏ...</b>")
     info = get_terabox_info(surl)
 
     if not info:
-        await status.edit_text("❌ Failed to extract. File may be deleted or set to private.")
+        await status.edit_text("<b>✖️ ᴇxᴛʀᴀᴄᴛɪᴏɴ ꜰᴀɪʟᴇᴅ</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\nFile may be deleted or set to private.")
         return
 
     filename = info["filename"]
@@ -72,30 +78,27 @@ async def handle_link(client, message: Message):
     size_mb = total_size / (1024 * 1024)
 
     if size_mb > 2000:
-        await status.edit_text("❌ File exceeds 2 GB Telegram limit.")
+        await status.edit_text("<b>✖️ ꜰɪʟᴇ ᴛᴏᴏ ʟᴀʀɢᴇ</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\nFile exceeds 2 GB Telegram limit.")
         return
 
     # ── Download to VPS ──────────────────────────────────────────────
-    await status.edit_text(f"⬇️ **Downloading to VPS...**\n📁 `{filename}`")
+    await status.edit_text(f"<b>⬇️ ᴅᴏᴡɴʟᴏᴀᴅɪɴɢ...</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n▸ <b>ꜰɪʟᴇ</b>: <code>{filename}</code>")
     try:
         local_path = await download_file(dlink, filename, status, total_size)
     except Exception as e:
-        await status.edit_text(f"⚠️ Download failed: {e}")
+        await status.edit_text(f"<b>✖️ ᴅᴏᴡɴʟᴏᴀᴅ ꜰᴀɪʟᴇᴅ</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n<code>{e}</code>")
         return
 
     # ── Upload to Telegram ───────────────────────────────────────────
     upload_start = time.time()
     caption = (
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        "⚡ **AZ STREAM**\n\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"🎬 **{filename}**\n\n"
-        f"📦 **{size_mb:.2f} MB**\n\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        "⚡ VPS Hosted\n"
-        "🚫 No Ads\n"
-        "♾ Unlimited Speed\n\n"
-        "Powered by AZ Network"
+        "<b>🎬 ꜱᴛʀᴇᴀᴍ ʀᴇᴀᴅʏ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"▸ <b>ꜰɪʟᴇ</b>: <code>{filename}</code>\n"
+        f"▸ <b>ꜱɪᴢᴇ</b>: <code>{size_mb:.2f} MB</code>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "⚡ VPS Hosted | 🚫 No Ads | ♾ Unlimited Speed\n"
+        "<i>Powered by AZ Network</i>"
     )
 
     try:
@@ -113,9 +116,16 @@ async def handle_link(client, message: Message):
         if user_id != ADMIN_ID:
             app.user_limits[user_id] = app.user_limits.get(user_id, 0) + 1
             remaining = 10 - app.user_limits[user_id]
-            await message.reply_text(f"✅ **File processed successfully!**\nRemaining Free Links for Today: **{remaining}/10**")
+            success_msg = (
+                "<b>✔ ᴘʀᴏᴄᴇꜱꜱ ᴄᴏᴍᴘʟᴇᴛᴇᴅ</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"▸ <b>ʀᴇᴍᴀɪɴɪɴɢ ʟɪᴍɪᴛ</b>: <code>{remaining}/10</code>\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            await message.reply_text(success_msg)
     except Exception as e:
-        await status.edit_text(f"⚠️ Upload failed: {e}")
+        await status.edit_text(f"<b>✖️ ᴜᴘʟᴏᴀᴅ ꜰᴀɪʟᴇᴅ</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n<code>{e}</code>")
     finally:
         if os.path.exists(local_path):
             os.remove(local_path)
+

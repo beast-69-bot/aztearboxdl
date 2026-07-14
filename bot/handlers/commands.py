@@ -6,18 +6,24 @@ from config import ADMIN_ID
 
 @app.on_message(filters.command(["start", "help"]) & filters.private)
 async def start_command(client, message: Message):
-    await message.reply_text(
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        "⚡ **AZ STREAM BOT**\n\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
+    text = (
+        "<b>⚡ ᴀᴢ ꜱᴛʀᴇᴀᴍ ʙᴏᴛ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "👋 Welcome! Send me any TeraBox link, and I will upload the file directly here.\n\n"
-        "⚡ Instant VPS Download\n"
-        "🚫 No Ads\n"
-        "♾ Unlimited Speed\n\n"
-        "Powered by AZ Network"
+        "▸ <b>ꜱᴘᴇᴇᴅ</b>: <code>Unlimited</code>\n"
+        "▸ <b>ᴀᴅꜱ</b>: <code>Disabled</code>\n"
+        "▸ <b>ʜᴏꜱᴛɪɴɢ</b>: <code>Dedicated VPS</code>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "<i>Powered by AZ Network</i>"
     )
+    await message.reply_text(text)
 
 
 @app.on_message(filters.command("myid") & filters.private)
 async def myid_command(client, message: Message):
-    await message.reply_text(f"🆔 Your Telegram User ID: `{message.from_user.id}`")
+    await message.reply_text(
+        "<b>🆔 ᴜꜱᴇʀ ɪᴅ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"▸ <b>ʏᴏᴜʀ ɪᴅ</b>: <code>{message.from_user.id}</code>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━"
+    )

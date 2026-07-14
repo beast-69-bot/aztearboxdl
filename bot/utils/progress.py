@@ -44,15 +44,19 @@ async def progress_callback(current, total, message, action: str, filename: str,
     eta = int((total - current) / speed) if speed else 0
 
     text = (
-        f"⏳ **{action}...**\n"
-        f"📁 `{filename}`\n\n"
-        f"{get_progress_bar(current, total)}\n"
-        f"🚀 **Speed:** {format_bytes(speed)}/s\n"
-        f"📦 **Size:** {format_bytes(current)} / {format_bytes(total)}\n"
-        f"⏱ **ETA:** {eta}s"
+        f"<b>⏳ {action.upper()}...</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"▸ <b>ꜰɪʟᴇ</b>: <code>{filename}</code>\n\n"
+        f" {get_progress_bar(current, total)}\n\n"
+        f"▸ <b>ꜱᴘᴇᴇᴅ</b>: <code>{format_bytes(speed)}/s</code>\n"
+        f"▸ <b>ᴘʀᴏɢʀᴇꜱꜱ</b>: <code>{format_bytes(current)} / {format_bytes(total)}</code>\n"
+        f"▸ <b>ᴇᴛᴀ</b>: <code>{eta}s</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<i>Please wait, processing task...</i>"
     )
 
     try:
         await message.edit_text(text)
     except Exception:
         pass
+
