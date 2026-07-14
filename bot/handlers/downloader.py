@@ -6,11 +6,15 @@ from pyrogram.types import Message
 from bot.client import app
 from bot.utils.terabox import get_terabox_info, download_file
 from bot.utils.progress import progress_callback
+from bot.utils.database import add_user, increment_stat
 from config import ADMIN_ID
 
 
-@app.on_message(filters.text & filters.private & ~filters.command(["start", "help", "myid"]))
+@app.on_message(filters.text & filters.private & ~filters.command(["start", "help", "myid", "broadcast", "stats"]))
 async def handle_link(client, message: Message):
+    user_id = message.from_user.id
+    add_user(user_id)  # Save active user to database
+
     text = message.text
     urls = re.findall(r"(https?://[^\s]+)", text)
 
@@ -85,6 +89,7 @@ async def handle_link(client, message: Message):
     await status.edit_text(f"<b>⬇️ ᴅᴏᴡɴʟᴏᴀᴅɪɴɢ...</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n▸ <b>ꜰɪʟᴇ</b>: <code>{filename}</code>")
     try:
         local_path = await download_file(dlink, filename, status, total_size)
+        increment_stat("downloads")  # Increment downloads stat
     except Exception as e:
         await status.edit_text(f"<b>✖️ ᴅᴏᴡɴʟᴏᴀᴅ ꜰᴀɪʟᴇᴅ</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n<code>{e}</code>")
         return
@@ -111,6 +116,7 @@ async def handle_link(client, message: Message):
             progress_args=(status, "Uploading to Telegram", filename, upload_start),
         )
         await status.delete()
+        increment_stat("uploads")  # Increment uploads stat
         
         # Increment usage count upon successful completion
         if user_id != ADMIN_ID:
@@ -125,6 +131,7 @@ async def handle_link(client, message: Message):
             await message.reply_text(success_msg)
     except Exception as e:
         await status.edit_text(f"<b>✖️ ᴜᴘʟᴏᴀᴅ ꜰᴀɪʟᴇᴅ</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n<code>{e}</code>")
+
     finally:
         if os.path.exists(local_path):
             os.remove(local_path)
