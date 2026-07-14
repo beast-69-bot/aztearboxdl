@@ -11,7 +11,7 @@ from bot.utils.proxy_pool import fetch_fresh_proxies, get_proxy_dict
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 Chrome/145.0.0.0 Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
@@ -30,14 +30,24 @@ def get_terabox_info(surl: str) -> dict | None:
     global vps_cached_proxies
     short = surl[1:] if surl.startswith("1") else surl
     
-    # ── FIRST TRY: Direct VPS IP (Recommended & Fastest) ─────────────
+    # ── FIRST TRY: Direct VPS IP ─────────────────────────────────────
     print("Attempting direct connection from VPS IP...")
     session = curl_requests.Session(impersonate="chrome110")
     session.cookies.update({"ndus": NDUS_COOKIE})
     
     first_url = f"https://www.1024tera.com/sharing/link?surl={short}"
     try:
-        response = session.get(first_url, headers=HEADERS, timeout=12)
+        # Disable redirects to avoid redirection loop (Max 30 redirects exceeded)
+        response = session.get(first_url, headers=HEADERS, timeout=12, allow_redirects=False)
+        
+        # Check if we were redirected to a login/verify page manually or if it blocks us
+        if response.status_code in [301, 302]:
+            redirect_target = response.headers.get("Location", "")
+            print(f"Direct connection got redirect: {response.status_code} -> {redirect_target}")
+            # If not sending to verify page, follow it once
+            if "verify" not in redirect_target.lower():
+                response = session.get(redirect_target, headers=HEADERS, timeout=12, allow_redirects=False)
+        
         if "need verify" not in response.text.lower() and '"errno":400141' not in response.text:
             match = re.search(r'fn%28%22(.*?)%22%29', response.text)
             if match:
@@ -99,7 +109,13 @@ def get_terabox_info(surl: str) -> dict | None:
         print(f"[Attempt {attempt+1}] Using proxy: {selected_proxy}")
         
         try:
-            response = session.get(first_url, headers=HEADERS, timeout=8)
+            # Disable redirect loop on proxy queries too
+            response = session.get(first_url, headers=HEADERS, timeout=8, allow_redirects=False)
+            if response.status_code in [301, 302]:
+                redirect_target = response.headers.get("Location", "")
+                if "verify" not in redirect_target.lower():
+                    response = session.get(redirect_target, headers=HEADERS, timeout=8, allow_redirects=False)
+                    
             if "need verify" in response.text.lower() or '"errno":400141' in response.text:
                 vps_cached_proxies.remove(selected_proxy)
                 continue
