@@ -133,32 +133,47 @@ def get_terabox_info(surl: str) -> dict | None:
     session = curl_requests.Session(impersonate="chrome110")
     session.cookies.update({"ndus": NDUS_COOKIE})
     
-    first_origin = "https://www.1024tera.com"
-    first_url = f"{first_origin}/sharing/link?surl={short}"
-    page_origin = first_origin
+    first_url = f"https://www.1024tera.com/sharing/link?surl={short}"
     try:
-        # Disable redirects to avoid redirection loop (Max 30 redirects exceeded)
-        response = session.get(first_url, headers=HEADERS, timeout=12, allow_redirects=False)
+        response = session.get(first_url, headers=HEADERS, timeout=12)
         
-        # Check if we were redirected to a login/verify page manually or if it blocks us
-        if response.status_code in [301, 302]:
-            redirect_target = response.headers.get("Location", "")
-            print(f"Direct connection got redirect: {response.status_code} -> {redirect_target}")
-            # If not sending to verify page, follow it once
-            if "verify" not in redirect_target.lower():
-                page_origin = _origin_from_url(redirect_target, page_origin)
-                response = session.get(redirect_target, headers=HEADERS, timeout=12, allow_redirects=False)
-        
-        if "need verify" not in response.text.lower() and '"errno":400141' not in response.text:
+        # Check if we were redirected to a login/verify page or hit verify wall
+        if "verify" in response.url.lower() or "login" in response.url.lower() or "need verify" in response.text.lower() or '"errno":400141' in response.text:
+            print("Direct connection hit verification/login wall.")
+        else:
             match = re.search(r'fn%28%22(.*?)%22%29', response.text)
             if match:
                 jsToken = match.group(1)
-                print("Direct VPS page token extraction successful!")
-                api_response = _share_list_request(session, page_origin, short, jsToken, timeout=12)
-                item = _item_from_share_list_response(api_response)
-                if item:
-                    print("Direct VPS IP extraction successful!")
-                    return item
+                print("Direct VPS IP extraction successful!")
+                
+                # Fetch share list
+                api_url = "https://www.1024tera.com/share/list"
+                params = {
+                    "app_id": "250528",
+                    "jsToken": jsToken,
+                    "site_referer": "https://www.terabox.app/",
+                    "shorturl": short,
+                    "root": "1"
+                }
+                api_headers = {
+                    "Host": "www.1024tera.com",
+                    "User-Agent": HEADERS["User-Agent"],
+                    "Accept": "application/json, text/plain, */*",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Referer": f"https://www.1024tera.com/sharing/link?surl={short}&clearCache=1",
+                    "Origin": "https://www.1024tera.com"
+                }
+                
+                api_response = session.get(api_url, params=params, headers=api_headers, timeout=12)
+                data = api_response.json()
+                if data.get("errno") == 0 and data.get("list"):
+                    item = data["list"][0]
+                    return {
+                        "filename": item.get("server_filename", "video.mp4"),
+                        "size": int(item.get("size", 0)),
+                        "dlink": item.get("dlink"),
+                    }
     except Exception as e:
         print(f"Direct VPS IP extraction failed due to error: {e}. Moving to proxy fallback...")
 
@@ -186,16 +201,9 @@ def get_terabox_info(surl: str) -> dict | None:
         print(f"[Attempt {attempt+1}] Using proxy: {selected_proxy}")
         
         try:
-            # Disable redirect loop on proxy queries too
-            page_origin = first_origin
-            response = session.get(first_url, headers=HEADERS, timeout=8, allow_redirects=False)
-            if response.status_code in [301, 302]:
-                redirect_target = response.headers.get("Location", "")
-                if "verify" not in redirect_target.lower():
-                    page_origin = _origin_from_url(redirect_target, page_origin)
-                    response = session.get(redirect_target, headers=HEADERS, timeout=8, allow_redirects=False)
-                    
-            if "need verify" in response.text.lower() or '"errno":400141' in response.text:
+            response = session.get(first_url, headers=HEADERS, timeout=10)
+            
+            if "verify" in response.url.lower() or "login" in response.url.lower() or "need verify" in response.text.lower() or '"errno":400141' in response.text:
                 vps_cached_proxies.remove(selected_proxy)
                 continue
                 
@@ -203,11 +211,35 @@ def get_terabox_info(surl: str) -> dict | None:
             if not match:
                 continue
             jsToken = match.group(1)
-
-            api_response = _share_list_request(session, page_origin, short, jsToken, timeout=8)
-            item = _item_from_share_list_response(api_response)
-            if item:
-                return item
+            
+            # API Call
+            api_url = "https://www.1024tera.com/share/list"
+            params = {
+                "app_id": "250528",
+                "jsToken": jsToken,
+                "site_referer": "https://www.terabox.app/",
+                "shorturl": short,
+                "root": "1"
+            }
+            api_headers = {
+                "Host": "www.1024tera.com",
+                "User-Agent": HEADERS["User-Agent"],
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": f"https://www.1024tera.com/sharing/link?surl={short}&clearCache=1",
+                "Origin": "https://www.1024tera.com"
+            }
+            
+            api_response = session.get(api_url, params=params, headers=api_headers, timeout=10)
+            data = api_response.json()
+            if data.get("errno") == 0 and data.get("list"):
+                item = data["list"][0]
+                return {
+                    "filename": item.get("server_filename", "video.mp4"),
+                    "size": int(item.get("size", 0)),
+                    "dlink": item.get("dlink"),
+                }
         except Exception:
             if selected_proxy in vps_cached_proxies:
                 vps_cached_proxies.remove(selected_proxy)
