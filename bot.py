@@ -295,4 +295,8 @@ async def on_startup():
 
 if __name__ == "__main__":
     print("Starting Pyrogram TeraBox Bot...")
-    app.run(on_startup())
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(app.start())
+    loop.run_until_complete(on_startup())
+    loop.run_until_complete(idle())
+    loop.run_until_complete(app.stop())
