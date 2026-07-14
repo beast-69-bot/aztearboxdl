@@ -13,6 +13,7 @@ API_ID = 37984186
 API_HASH = "f1525a5c408ab147efe4c888f4b08c1a"
 BOT_TOKEN = "7899193078:AAFvbxq8AqijIoLu3eJHv5GCXk1x8byqITA"
 NDUS_COOKIE = "YSkeXKjteHuioD6j7V0PlO3TC8wHJK1hA7q9yu5o"
+ADMIN_ID = None  # Bot will learn your ID on first /start. Or set manually: ADMIN_ID = 123456789
 
 # Initialize Pyrogram Client
 app = Client("terabox_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -161,20 +162,6 @@ async def download_file(dlink, filename, message: Message, total_size: int):
     return filepath
 
 
-@app.on_message(filters.command(["start", "help"]))
-async def start_command(client, message: Message):
-    welcome_text = (
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        "⚡ **AZ STREAM BOT**\n\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        "👋 Welcome! Send me any TeraBox link, and I will upload the file directly here.\n\n"
-        "⚡ Instant VPS Download\n"
-        "🚫 No Ads\n"
-        "♾ Unlimited Speed\n\n"
-        "Powered by AZ Network"
-    )
-    await message.reply_text(welcome_text)
-
 @app.on_message(filters.text & filters.private)
 async def handle_link(client, message: Message):
     text = message.text
@@ -263,6 +250,46 @@ async def handle_link(client, message: Message):
     except Exception as e:
         await status_msg.edit_text(f"⚠️ An error occurred: {str(e)}")
 
+@app.on_message(filters.command("myid") & filters.private)
+async def my_id_command(client, message: Message):
+    await message.reply_text(f"🆔 Your Telegram User ID: `{message.from_user.id}`")
+
+async def send_startup_notification():
+    """Sends a startup message to the admin when bot restarts."""
+    global ADMIN_ID
+    if ADMIN_ID:
+        import datetime
+        now = datetime.datetime.now().strftime("%d %b %Y, %I:%M %p")
+        await app.send_message(
+            ADMIN_ID,
+            f"✅ **AZ Stream Bot — Restarted!**\n\n"
+            f"🕐 Time: `{now}`\n"
+            f"🖥 VPS: `209.38.105.80`\n"
+            f"🤖 Status: Online & Ready\n\n"
+            f"Powered by AZ Network"
+        )
+
+@app.on_message(filters.command(["start", "help"]))
+async def start_command(client, message: Message):
+    global ADMIN_ID
+    # Auto-learn admin ID on first /start
+    if ADMIN_ID is None:
+        ADMIN_ID = message.from_user.id
+        print(f"Admin ID set to: {ADMIN_ID}")
+
+    welcome_text = (
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "⚡ **AZ STREAM BOT**\n\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "👋 Welcome! Send me any TeraBox link, and I will upload the file directly here.\n\n"
+        "⚡ Instant VPS Download\n"
+        "🚫 No Ads\n"
+        "♾ Unlimited Speed\n\n"
+        "Powered by AZ Network"
+    )
+    await message.reply_text(welcome_text)
+
 if __name__ == "__main__":
     print("Starting Pyrogram TeraBox Bot...")
+    app.on_connect = lambda client: asyncio.ensure_future(send_startup_notification())
     app.run()
