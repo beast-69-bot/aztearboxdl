@@ -4,7 +4,7 @@ import uuid
 import asyncio
 from dotenv import load_dotenv
 from curl_cffi import requests as curl_requests
-from pyrogram import Client, filters
+from pyrogram import Client, filters, idle
 from pyrogram.types import Message
 
 # Load environment variables from .env file
@@ -294,7 +294,7 @@ async def main():
     print("Starting Pyrogram TeraBox Bot...")
     await send_startup_notification()
     print("Bot is running... Press Ctrl+C to stop.")
-    await app.idle()
+    await idle()
     await app.stop()
 
 if __name__ == "__main__":
