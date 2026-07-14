@@ -1,38 +1,28 @@
 import os
 import re
-import json
 import uuid
-import threading
-from flask import Flask, request, Response
-import telebot
+import asyncio
 from curl_cffi import requests as curl_requests
+from pyrogram import Client, filters
+from pyrogram.types import Message
 
 # ==========================================
 # CONFIGURATION
 # ==========================================
+API_ID = 37984186
+API_HASH = "f1525a5c408ab147efe4c888f4b08c1a"
 BOT_TOKEN = "7899193078:AAFvbxq8AqijIoLu3eJHv5GCXk1x8byqITA"
-# TeraBox 'ndus' cookie value from your logged-in browser
 NDUS_COOKIE = "YSkeXKjteHuioD6j7V0PlO3TC8wHJK1hA7q9yu5o"
-# Your VPS IP (Replace with your actual VPS public IP or Domain)
-VPS_IP = "YOUR_VPS_IP"  # e.g., "198.51.100.23"
-PORT = 8080
 
-# ==========================================
-
-app = Flask(__name__)
-bot = telebot.TeleBot(BOT_TOKEN)
-
-# In-memory dictionary to store generated links mapping
-# { 'unique_id': {'dlink': '...', 'filename': '...'} }
-links_db = {}
+# Initialize Pyrogram Client
+app = Client("terabox_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 def get_terabox_data(surl: str):
     """
-    Extracts the direct download link from TeraBox using curl_cffi to bypass bot protections.
+    Extracts the direct download link from TeraBox using curl_cffi.
     """
     short_url = surl[1:] if surl.startswith("1") else surl
     session = curl_requests.Session(impersonate="chrome110")
-
     session.cookies.update({"ndus": NDUS_COOKIE})
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/145.0.0.0 Safari/537.36"
@@ -71,18 +61,11 @@ def get_terabox_data(surl: str):
     return api_response.json()
 
 
-# --- FLASK WEB SERVER FOR PROXY STREAMING ---
-@app.route('/dl/<file_id>')
-def download_proxy(file_id):
-    if file_id not in links_db:
-        return "Link expired or not found.", 404
-        
-    file_info = links_db[file_id]
-    dlink = file_info['dlink']
-    filename = file_info['filename']
-    
-    # We use curl_cffi to fetch the actual video stream
-    # Pass the same cookies and User-Agent so TeraBox trusts us
+async def download_file(dlink, filename, message: Message):
+    """
+    Downloads the file from TeraBox to the VPS local storage in chunks.
+    Returns the local filepath.
+    """
     session = curl_requests.Session(impersonate="chrome110")
     session.cookies.update({"ndus": NDUS_COOKIE})
     headers = {
@@ -90,97 +73,131 @@ def download_proxy(file_id):
         "Accept": "*/*"
     }
     
-    # Send request with stream=True
     req = session.get(dlink, headers=headers, stream=True)
-    
     if req.status_code != 200:
-        return f"TeraBox returned error: {req.status_code}", 500
+        raise Exception(f"Failed to connect to TeraBox download server. Status: {req.status_code}")
 
-    def generate():
-        # Stream the content in chunks directly to the user's browser
-        for chunk in req.iter_content(chunk_size=1024 * 64): # 64KB chunks
+    # Generate a unique path to avoid collisions
+    filepath = f"downloads/{uuid.uuid4().hex[:8]}_{filename}"
+    os.makedirs("downloads", exist_ok=True)
+
+    # Status update
+    await message.edit_text(f"⏳ **Downloading to VPS Server...**\n📁 File: `{filename}`")
+
+    # Download in chunks
+    with open(filepath, 'wb') as f:
+        for chunk in req.iter_content(chunk_size=1024 * 1024): # 1MB chunks
             if chunk:
-                yield chunk
+                f.write(chunk)
+                
+    return filepath
 
-    # Return the Flask streaming response
-    return Response(
-        generate(),
-        headers={
-            'Content-Type': req.headers.get('Content-Type', 'application/octet-stream'),
-            'Content-Disposition': f'attachment; filename="{filename}"',
-            'Content-Length': req.headers.get('Content-Length')
-        }
+
+@app.on_message(filters.command(["start", "help"]))
+async def start_command(client, message: Message):
+    welcome_text = (
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "⚡ **AZ STREAM BOT**\n\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "👋 Welcome! Send me any TeraBox link, and I will upload the file directly here.\n\n"
+        "⚡ Instant VPS Download\n"
+        "🚫 No Ads\n"
+        "♾ Unlimited Speed\n\n"
+        "Powered by AZ Network"
     )
+    await message.reply_text(welcome_text)
 
-
-# --- TELEGRAM BOT HANDLERS ---
-@bot.message_handler(commands=['start', 'help'])
-def send_welcome(message):
-    bot.reply_to(message, "👋 Send me a TeraBox link!\nI will generate a direct Proxy Stream link that bypasses all limits and Ads.")
-
-@bot.message_handler(func=lambda message: True)
-def handle_message(message):
+@app.on_message(filters.text & filters.private)
+async def handle_link(client, message: Message):
     text = message.text
     urls = re.findall(r'(https?://[^\s]+)', text)
     
     if not urls:
-        bot.reply_to(message, "Please send a valid TeraBox link. 🔗")
+        error_text = (
+            "❌ **Invalid TeraBox Link**\n\n"
+            "Please send a public\n"
+            "`1024tera.com`\n"
+            "or\n"
+            "`terasharefile.com`\n"
+            "link.\n\n"
+            "Example:\n"
+            "`https://1024tera.com/s/...`"
+        )
+        await message.reply_text(error_text)
         return
 
     url = urls[0]
     surl_match = re.search(r'/s/([A-Za-z0-9_-]+)', url)
     if not surl_match:
-        bot.reply_to(message, "Could not extract ID. Format should be terabox.app/s/...")
+        await message.reply_text("❌ Could not extract ID. Make sure it's a valid TeraBox shortlink.")
         return
         
     surl = surl_match.group(1)
-    status_msg = bot.reply_to(message, "⏳ Extracting and preparing Proxy Stream...")
+    
+    # Progress: Validating
+    status_msg = await message.reply_text("🔍 Validating Link...")
+    await asyncio.sleep(0.5)
+    
+    # Progress: Extracting
+    await status_msg.edit_text("📥 Extracting Stream...")
 
     try:
         data = get_terabox_data(surl)
         if not data or data.get("errno") != 0 or not data.get("list"):
-            bot.edit_message_text("❌ Failed. File might be deleted, or cookie is expired.", 
-                                  chat_id=message.chat.id, message_id=status_msg.message_id)
+            await status_msg.edit_text("❌ Failed to extract. The file might be deleted or private.")
             return
             
         file_info = data["list"][0]
-        filename = file_info.get("server_filename", "Video.mp4")
+        filename = file_info.get("server_filename", "Unknown_Video.mp4")
+        dlink = file_info.get("dlink")
         size_mb = int(file_info.get("size", 0)) / (1024 * 1024)
-        raw_dlink = file_info.get("dlink")
         
-        # Create a unique ID for our proxy server
-        file_id = str(uuid.uuid4())[:8]
-        links_db[file_id] = {
-            "dlink": raw_dlink,
-            "filename": filename
-        }
+        if size_mb > 2000:
+            await status_msg.edit_text("❌ Error: File is larger than 2GB (Telegram Limit).")
+            return
+
+        # Progress: Generating
+        await status_msg.edit_text("⚡ Generating Download...")
+        await asyncio.sleep(0.5)
         
-        # Build the final link for the user
-        proxy_url = f"http://{VPS_IP}:{PORT}/dl/{file_id}"
+        # 1. Download to VPS
+        await status_msg.edit_text(f"⏳ **Downloading to VPS Server...**\n📁 `{filename}`")
+        local_filepath = await download_file(dlink, filename, status_msg)
         
-        reply_text = (
-            f"✅ **Stream/Download Ready!**\n\n"
-            f"📁 **File:** `{filename}`\n"
-            f"⚖️ **Size:** `{size_mb:.2f} MB`\n\n"
-            f"🔗 [CLICK HERE TO FAST DOWNLOAD]({proxy_url})\n\n"
-            f"*(No Ads | Bypassed Telegram Limit | Hosted on VPS)*"
+        # 2. Upload to Telegram
+        await status_msg.edit_text(f"🚀 **Uploading to Telegram...**\n📁 `{filename}`")
+        
+        # Premium AZ Network Caption
+        caption = (
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "⚡ **AZ STREAM**\n\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            f"🎬 **{filename}**\n\n"
+            f"📦 **{size_mb:.2f} MB**\n\n"
+            "🟢 **Ready**\n\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "⚡ VPS Hosted\n"
+            "🚫 No Ads\n"
+            "♾ Unlimited Speed\n\n"
+            "Powered by AZ Network"
         )
         
-        bot.edit_message_text(reply_text, chat_id=message.chat.id, 
-                              message_id=status_msg.message_id, parse_mode="Markdown",
-                              disable_web_page_preview=True)
+        await client.send_video(
+            chat_id=message.chat.id,
+            video=local_filepath,
+            caption=caption,
+            supports_streaming=True
+        )
+        
+        await status_msg.delete()
+        
+        # 3. Cleanup VPS storage
+        if os.path.exists(local_filepath):
+            os.remove(local_filepath)
 
     except Exception as e:
-        bot.edit_message_text(f"⚠️ Error: {str(e)}", chat_id=message.chat.id, message_id=status_msg.message_id)
-
-def run_bot():
-    print("Bot is starting...")
-    bot.infinity_polling()
+        await status_msg.edit_text(f"⚠️ An error occurred: {str(e)}")
 
 if __name__ == "__main__":
-    # Start bot in a separate background thread
-    threading.Thread(target=run_bot, daemon=True).start()
-    
-    # Start Flask Web Server on the main thread
-    print(f"Starting Proxy Web Server on Port {PORT}...")
-    app.run(host="0.0.0.0", port=PORT)
+    print("Starting Pyrogram TeraBox Bot...")
+    app.run()
