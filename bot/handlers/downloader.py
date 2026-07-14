@@ -1,6 +1,7 @@
 import re
 import os
 import time
+import asyncio
 from pyrogram import filters
 from pyrogram.types import Message
 from bot.client import app
@@ -8,6 +9,16 @@ from bot.utils.terabox import get_terabox_info, download_file
 from bot.utils.progress import progress_callback
 from bot.utils.database import add_user, increment_stat
 from config import ADMIN_ID
+
+
+async def delete_message_after_delay(client, chat_id: int, message_id: int, delay: int):
+    """Waits for specified delay and deletes the target message."""
+    await asyncio.sleep(delay)
+    try:
+        await client.delete_messages(chat_id=chat_id, message_ids=message_id)
+        print(f"Auto-deleted message {message_id} in chat {chat_id} after {delay} seconds.")
+    except Exception as e:
+        print(f"Failed to auto-delete message {message_id} in chat {chat_id}: {e}")
 
 
 @app.on_message(filters.text & filters.private & ~filters.command(["start", "help", "myid", "broadcast", "stats"]))
@@ -70,7 +81,6 @@ async def handle_link(client, message: Message):
 
     # ── Fetch file info ──────────────────────────────────────────────
     await status.edit_text("<b>📥 ᴇxᴛʀᴀᴄᴛɪɴɢ ɪɴꜰᴏ...</b>")
-    import asyncio
     info = await asyncio.to_thread(get_terabox_info, surl)
 
     if not info:
@@ -101,7 +111,8 @@ async def handle_link(client, message: Message):
         "<b>🎬 ꜱᴛʀᴇᴀᴍ ʀᴇᴀᴅʏ</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"▸ <b>ꜰɪʟᴇ</b>: <code>{filename}</code>\n"
-        f"▸ <b>ꜱɪᴢᴇ</b>: <code>{size_mb:.2f} MB</code>\n\n"
+        f"▸ <b><b>ꜱɪᴢᴇ</b></b>: <code>{size_mb:.2f} MB</code>\n"
+        "▸ <b>⏳ Auto Delete:</b> <code>Active (20 mins)</code>\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "⚡ VPS Hosted | 🚫 No Ads | ♾ Unlimited Speed\n"
         "<i>Powered by</i> @az_hawas_adda 🔥"
@@ -118,7 +129,7 @@ async def handle_link(client, message: Message):
         thumb_path = None
 
     try:
-        await client.send_video(
+        sent_video = await client.send_video(
             chat_id=message.chat.id,
             video=local_path,
             caption=caption,
@@ -130,6 +141,9 @@ async def handle_link(client, message: Message):
         await status.delete()
         increment_stat("uploads")  # Increment uploads stat
         
+        # Start background task to delete the message after 20 minutes (1200 seconds)
+        asyncio.create_task(delete_message_after_delay(client, message.chat.id, sent_video.id, 1200))
+        
         # Increment usage count upon successful completion
         if user_id != ADMIN_ID:
             app.user_limits[user_id] = app.user_limits.get(user_id, 0) + 1
@@ -137,14 +151,21 @@ async def handle_link(client, message: Message):
             success_msg = (
                 "<b>✔ ᴘʀᴏᴄᴇꜱꜱ ᴄᴏᴍᴘʟᴇᴛᴇᴅ</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"▸ <b>ʀᴇᴍᴀɪɴɪɴɢ ʟɪᴍɪᴛ</b>: <code>{remaining}/10</code>\n\n"
+                f"▸ <b>ʀᴇᴍᴀɪɴɪɴɢ ʟɪᴍɪᴛ</b>: <code>{remaining}/10</code>\n"
+                "▸ ⚠️ <i>This video will auto-delete in 20 minutes!</i>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━"
             )
             await message.reply_text(success_msg)
+        else:
+            admin_msg = (
+                "<b>✔ ᴘʀᴏᴄᴇꜱꜱ ᴄᴏᴍᴘʟᴇᴛᴇᴅ</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "▸ ⚠️ <i>This video will auto-delete in 20 minutes!</i>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            await message.reply_text(admin_msg)
     except Exception as e:
         await status.edit_text(f"<b>✖️ ᴜᴘʟᴏᴀᴅ ꜰᴀɪʟᴇᴅ</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n<code>{e}</code>")
-
     finally:
         if os.path.exists(local_path):
             os.remove(local_path)
-
