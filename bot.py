@@ -290,11 +290,12 @@ async def start_command(client, message: Message):
     await message.reply_text(welcome_text)
 
 async def main():
-    async with app:
-        print("Starting Pyrogram TeraBox Bot...")
-        await send_startup_notification()
-        print("Bot is running... Press Ctrl+C to stop.")
-        await asyncio.Event().wait()
+    await app.start()
+    print("Starting Pyrogram TeraBox Bot...")
+    await send_startup_notification()
+    print("Bot is running... Press Ctrl+C to stop.")
+    await app.idle()
+    await app.stop()
 
 if __name__ == "__main__":
     asyncio.run(main())
