@@ -2,3 +2,4 @@ pyrogram
 TgCrypto
 curl_cffi
 python-dotenv
+playwright

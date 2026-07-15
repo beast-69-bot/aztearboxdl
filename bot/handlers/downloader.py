@@ -2,9 +2,6 @@ import re
 import os
 import time
 import asyncio
-import sys
-import logging
-from dotenv import load_dotenv
 from pyrogram import filters
 from pyrogram.types import Message
 from bot.client import app
@@ -12,61 +9,6 @@ from bot.utils.terabox import get_terabox_info, download_file, check_ndus_cookie
 from bot.utils.progress import progress_callback
 from bot.utils.database import add_user, increment_stat
 from config import ADMIN_ID
-
-logger = logging.getLogger(__name__)
-
-# Path configuration for cookie refresher relative to downloader.py
-BOT_HANDLERS_DIR = os.path.dirname(os.path.abspath(__file__))
-BOT_DIR = os.path.dirname(BOT_HANDLERS_DIR)
-BOT_ROOT_DIR = os.path.dirname(BOT_DIR)
-ROOT_DIR = os.path.dirname(BOT_ROOT_DIR)
-
-# Resolve refresh script path (support VPS and local layout)
-if os.path.exists(os.path.join(BOT_ROOT_DIR, "refresh_cookies.py")):
-    REFRESH_SCRIPT = os.path.join(BOT_ROOT_DIR, "refresh_cookies.py")
-else:
-    REFRESH_SCRIPT = os.path.join(ROOT_DIR, "refresh_cookies.py")
-
-# Resolve venv python path (support 'venv' and '.venv')
-if sys.platform == "win32":
-    VENV_PYTHON = os.path.join(BOT_ROOT_DIR, "venv", "Scripts", "python.exe")
-    if not os.path.exists(VENV_PYTHON):
-        VENV_PYTHON = os.path.join(ROOT_DIR, ".venv", "Scripts", "python.exe")
-else:
-    VENV_PYTHON = os.path.join(BOT_ROOT_DIR, "venv", "bin", "python")
-    if not os.path.exists(VENV_PYTHON):
-        VENV_PYTHON = os.path.join(ROOT_DIR, ".venv", "bin", "python")
-
-python_exe = VENV_PYTHON if os.path.exists(VENV_PYTHON) else sys.executable
-
-async def trigger_cookie_refresh() -> bool:
-    """Runs the refresh_cookies.py script to refresh ndus cookie."""
-    logger.info(f"Triggering auto login / refresh script: {python_exe} {REFRESH_SCRIPT}")
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            python_exe, REFRESH_SCRIPT, "--headless",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await proc.communicate()
-        stdout_str = stdout.decode("utf-8", errors="ignore")
-        stderr_str = stderr.decode("utf-8", errors="ignore")
-        
-        logger.info(f"Refresh Script stdout: {stdout_str}")
-        if proc.returncode == 0:
-            logger.info("Cookie refresh script ran successfully!")
-            # Reload env variables
-            load_dotenv(BOT_ENV_PATH, override=True)
-            import config
-            config.NDUS_COOKIE = os.getenv("NDUS_COOKIE")
-            logger.info("Reloaded NDUS_COOKIE successfully!")
-            return True
-        else:
-            logger.error(f"Cookie refresh script failed (exit code {proc.returncode})")
-            logger.error(f"Stderr: {stderr_str}")
-    except Exception as e:
-        logger.error(f"Failed to execute cookie refresh: {e}", exc_info=True)
-    return False
 
 
 async def delete_message_after_delay(client, chat_id: int, message_id: int, delay: int):
@@ -159,6 +101,8 @@ async def handle_link(client, message: Message):
     filename = info["filename"]
     total_size = info["size"]
     dlink = info["dlink"]
+    referer = info.get("referer")
+    origin = info.get("origin")
     size_mb = total_size / (1024 * 1024)
 
     if size_mb > 2000:
@@ -168,7 +112,7 @@ async def handle_link(client, message: Message):
     # ── Download to VPS ──────────────────────────────────────────────
     await status.edit_text(f"<b>⬇️ ᴅᴏᴡɴʟᴏᴀᴅɪɴɢ...</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n▸ <b>ꜰɪʟᴇ</b>: <code>{filename}</code>")
     try:
-        local_path = await download_file(dlink, filename, status, total_size)
+        local_path = await download_file(dlink, filename, status, total_size, referer=referer, origin=origin)
         increment_stat("downloads")  # Increment downloads stat
     except Exception as e:
         await status.edit_text(f"<b>✖️ ᴅᴏᴡɴʟᴏᴀᴅ ꜰᴀɪʟᴇᴅ</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n<code>{e}</code>")
