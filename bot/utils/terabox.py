@@ -405,8 +405,9 @@ def get_terabox_info(surl: str) -> dict | None:
     """
     Fetches file metadata from TeraBox.
     Strategy:
-      1. Python API (anonymous HTML + share/list, then filemetas for dlink) — fast
-      2. Playwright browser fallback — slower but bypasses account-level blocks
+      1. Python API via static proxy (anonymous HTML→jsToken→share/list→dlink) — fast (~4s)
+      2. Playwright browser fallback — reliable (~6s), bypasses all account-level blocks
+    Note: Direct VPS IP is skipped — TeraBox blocks it even for anonymous requests.
     """
     short = surl[1:] if surl.startswith("1") else surl
 
@@ -416,23 +417,16 @@ def get_terabox_info(surl: str) -> dict | None:
     first_origin = "https://dm.1024tera.com"
     first_url = f"{first_origin}/sharing/link?surl={short}"
 
-    # ── Attempt 1: Python API via static proxy ────────────────────────────
+    # ── Attempt 1: Python API via static proxy (fast path) ───────────────
     if config.STATIC_PROXY:
         print("Attempting extraction via STATIC_PROXY (Python API)...")
         session.proxies = format_curl_proxy(config.STATIC_PROXY)
         res = _extract_info_via_session(session, first_url, short, first_origin, cookie_header)
         if res:
             return res
-        print("STATIC_PROXY extraction failed. Trying direct VPS IP...")
+        print("STATIC_PROXY extraction failed. Falling back to Playwright...")
 
-    # ── Attempt 2: Python API via direct VPS IP ───────────────────────────
-    print("Attempting extraction via direct VPS IP (Python API)...")
-    session2 = curl_requests.Session(impersonate="chrome110")
-    res2 = _extract_info_via_session(session2, first_url, short, first_origin, cookie_header)
-    if res2:
-        return res2
-
-    # ── Attempt 3: Playwright browser fallback ────────────────────────────
+    # ── Attempt 2: Playwright browser fallback (reliable) ────────────────
     print("Python API failed. Falling back to Playwright browser extraction...")
     try:
         return asyncio.run(_get_info_via_playwright(short))
