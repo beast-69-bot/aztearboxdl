@@ -368,7 +368,161 @@ async def perform_autologin():
                 print(f"[WARN] Failed to capture debug screenshot: {e}")
             await context.close()
             return None
-            
+
+        # Helper to solve captcha if present
+        async def solve_captcha_if_present(label="CAPTCHA"):
+            attempt_limit = 5
+            for try_num in range(attempt_limit):
+                captcha_input = page.locator("#box #input, #box input, input[placeholder*='verification code']")
+                if await captcha_input.count() > 0 or "verification" in page.url.lower():
+                    print(f"\n[WARNING] {label} challenge detected! (Attempt {try_num+1}/{attempt_limit})")
+                    
+                    canvas_locator = page.locator("#box #canvas, #box canvas, #canvas").first
+                    try:
+                        await canvas_locator.wait_for(state="visible", timeout=5000)
+                    except Exception:
+                        pass
+                    
+                    try:
+                        container_html = await page.evaluate("""() => {
+                            const canvas = document.querySelector('#box #canvas, #box canvas, #canvas');
+                            if (!canvas) return 'Canvas not found';
+                            let parent = canvas.parentElement;
+                            for (let i = 0; i < 5; i++) {
+                                if (parent && (parent.className.includes('dialog') || parent.className.includes('modal') || parent.className.includes('verify') || parent.className.includes('captcha'))) {
+                                    return parent.outerHTML;
+                                }
+                                if (parent) parent = parent.parentElement;
+                            }
+                            return canvas.parentElement ? canvas.parentElement.outerHTML : 'Parent not found';
+                        }""")
+                        print(f"[CAPTCHA HTML DIAGNOSTIC]:\n{container_html}\n")
+                    except Exception as e:
+                        print(f"[WARN] Failed to get captcha HTML: {e}")
+                    
+                    captcha_img_path = os.path.join(WORKSPACE_DIR, "captcha.png")
+                    try:
+                        import base64
+                        base64_str = await page.evaluate("""() => {
+                            const canvas = document.querySelector('#box #canvas, #box canvas, #canvas');
+                            return canvas ? canvas.toDataURL('image/png') : null;
+                        }""")
+                        if base64_str and "," in base64_str:
+                            img_data = base64.b64decode(base64_str.split(",")[1])
+                            with open(captcha_img_path, "wb") as f:
+                                f.write(img_data)
+                            print("[INFO] Successfully extracted raw captcha image from canvas memory.")
+                        else:
+                            raise Exception("Canvas image data is empty or invalid.")
+                    except Exception as e:
+                        print(f"[WARN] Failed to extract canvas via memory: {e}. Falling back to screenshot...")
+                        try:
+                            await canvas_locator.screenshot(path=captcha_img_path)
+                        except Exception:
+                            try:
+                                await page.screenshot(path=captcha_img_path)
+                            except Exception:
+                                pass
+                    
+                    telegram_send_photo(
+                        captcha_img_path, 
+                        f"⚠️ *TeraBox {label} Detected\\!* \\(Attempt {try_num+1}/{attempt_limit}\\)\nSolving automatically if 2Captcha API Key is set\\."
+                    )
+                    
+                    code = None
+                    if TWO_CAPTCHA_API_KEY:
+                        print("[2CAPTCHA] Found API Key. Attempting automatic solving...")
+                        try:
+                            if os.path.exists(captcha_img_path):
+                                with open(captcha_img_path, "rb") as image_file:
+                                    image_bytes = image_file.read()
+                            else:
+                                    image_bytes = await canvas_locator.screenshot()
+                            code = urllib_solve_2captcha(TWO_CAPTCHA_API_KEY, image_bytes)
+                            
+                            if code and len(code) < 4:
+                                print(f"[WARN] Solved code '{code}' is too short (< 4 chars). Refreshing captcha...")
+                                await canvas_locator.click()
+                                await page.wait_for_timeout(1500)
+                                continue
+                        except Exception as e:
+                            print(f"[2CAPTCHA ERROR] Automatic solve failed: {e}")
+                            
+                    if not code:
+                        print(f"[ACTION REQUIRED] Please open the image '{captcha_img_path}' to see the code.")
+                        if sys.stdin.isatty():
+                            code = input(f">>> Enter the 4-letter {label} code shown in the image: ").strip()
+                        else:
+                            print("[ERROR] Non-interactive environment. Cannot solve captcha without terminal input.")
+                            await context.close()
+                            return None
+                            
+                    if code:
+                        try:
+                            target_input = page.locator("#box #input, #box input").first
+                            await target_input.fill("")
+                            await page.wait_for_timeout(200)
+                            await target_input.type(code, delay=100)
+                            await page.wait_for_timeout(500)
+                            
+                            debug_typed_path = os.path.join(WORKSPACE_DIR, "debug_typed.png")
+                            try:
+                                await page.screenshot(path=debug_typed_path)
+                                telegram_send_photo(debug_typed_path, f"📸 *{label} Typed State* \\(Attempt {try_num+1}\\)\nCode filled: `{code}`")
+                            except Exception as e:
+                                print(f"[WARN] Failed to send typed screenshot: {e}")
+                                
+                            try:
+                                await page.evaluate(f"""() => {{
+                                    const input = document.getElementById('input') || document.querySelector('#box input');
+                                    if (input) {{
+                                        input.value = '{code}';
+                                        input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                        input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                    }}
+                                }}""")
+                                print("[INFO] Dispatched input and change events to sync React state.")
+                            except Exception as e:
+                                print(f"[WARN] Failed to dispatch events: {e}")
+                                
+                            try:
+                                confirm_btn = page.locator("#box #confirm, #box button, button#confirm, #confirm").first
+                                if await confirm_btn.count() > 0:
+                                    print("[INFO] Clicking confirm button via direct ID selector...")
+                                    await confirm_btn.click()
+                                    await page.wait_for_timeout(200)
+                                    try:
+                                        await page.evaluate("const btn = document.getElementById('confirm') || document.querySelector('#box button'); if(btn) btn.click();")
+                                    except Exception:
+                                        pass
+                                else:
+                                    confirm_btn = None
+                                    for level in range(1, 6):
+                                        xpath_selector = f"xpath=ancestor::div[{level}]"
+                                        btn = target_input.locator(xpath_selector).locator("button, input[type='submit'], .confirm-btn, [class*='confirm'], :has-text('Confirm')").first
+                                        if await btn.count() > 0:
+                                            confirm_btn = btn
+                                            break
+                                    if confirm_btn:
+                                        print(f"[INFO] Clicking found confirm button at ancestor level...")
+                                        await confirm_btn.click()
+                                        await page.wait_for_timeout(200)
+                                        try:
+                                            await page.evaluate("const btn = document.querySelector('#box button') || document.querySelector('button:has-text(\"Confirm\")'); if(btn) btn.click();")
+                                        except Exception:
+                                            pass
+                                    else:
+                                        await page.locator("button:has-text('Confirm'), .confirm-btn, [class*='confirm']").first.click()
+                            except Exception as e:
+                                print(f"[WARN] Failed to click confirm button: {e}")
+                                
+                            print("[INFO] Captcha submitted. Waiting for page reaction...")
+                            await page.wait_for_timeout(4000)
+                        except Exception as e:
+                            print(f"[ERROR] Failed to submit captcha: {e}")
+                else:
+                    break
+
         # 1. Navigate to TeraBox
         print("[INFO] Navigating to TeraBox...")
         try:
@@ -462,269 +616,75 @@ async def perform_autologin():
             await page.wait_for_timeout(3000)
         except Exception as e:
             print(f"[WARN] Error during session validation: {e}")
-                   # Check if verification page or captcha is already active on navigation
-        is_verification_active = False
-        captcha_input_init = page.locator("input[placeholder*='verification code']").first
-        if (await captcha_input_init.count() > 0) or "verification" in page.url.lower():
-            is_verification_active = True
+        # 3. Check and solve IP Unlock CAPTCHA if active initially
+        await solve_captcha_if_present("IP Unlock CAPTCHA")
+
+        # 4. Perform Login Credentials Flow
+        print("[INFO] Performing Login Credentials Flow...")
+        try:
+            login_btn = page.locator(".login-btn").first
+            await login_btn.wait_for(state="visible", timeout=5000)
+            await login_btn.click()
+            await page.wait_for_timeout(2000)
+        except Exception:
+            pass
             
-        if is_verification_active:
-            print("[INFO] Verification/Captcha page is already active. Skipping credentials entry...")
-        else:
-            # 3. Perform Login Flow (if not logged in)
+        print("[INFO] Opening Email login dialog...")
+        try:
+            email_logo = page.locator(".other-item .logo").nth(1)
+            await email_logo.wait_for(state="visible", timeout=5000)
+            await email_logo.click()
+            await page.wait_for_timeout(2000)
+        except Exception as e:
+            return await save_debug_and_exit(f"Could not click email tab logo: {e}")
+            
+        print("[INFO] Entering credentials...")
+        try:
+            await page.locator("input[placeholder*='email']").first.fill(USER_EMAIL)
+            await page.locator("input[type='password']").first.fill(USER_PASS)
+            await page.wait_for_timeout(500)
+            
+            await page.locator(".btn-class-login").first.click()
+            print("[INFO] Credentials submitted. Waiting for authentication response...")
+            await page.wait_for_timeout(3000)
+        except Exception as e:
+            return await save_debug_and_exit(f"Failed during credentials submission: {e}")
+
+        # 5. Solve Login CAPTCHA if active after submission
+        await solve_captcha_if_present("Login CAPTCHA")
+
+        # 6. Success verification and cookie extraction
+        cookie_found = False
+        for i in range(24):
+            await page.wait_for_timeout(500)
+            
+            # Scan for visible error/toast/tip alerts on the page
             try:
-                login_btn = page.locator(".login-btn").first
-                await login_btn.wait_for(state="visible", timeout=5000)
-                await login_btn.click()
-                await page.wait_for_timeout(2000)
+                alert_selectors = [
+                    "[class*='error']", "[class*='toast']", "[class*='message']", 
+                    "[class*='tip']", ".alert", "[class*='warn']", "[class*='popup']"
+                ]
+                for sel in alert_selectors:
+                    elements = page.locator(sel)
+                    count = await elements.count()
+                    for idx in range(count):
+                        el = elements.nth(idx)
+                        if await el.is_visible():
+                            txt = (await el.text_content() or "").strip()
+                            if txt and len(txt) < 150:  # avoid printing huge logs
+                                print(f"[PAGE ALERT] {txt}")
             except Exception:
                 pass
                 
-            print("[INFO] Opening Email login dialog...")
-            try:
-                email_logo = page.locator(".other-item .logo").nth(1)
-                await email_logo.wait_for(state="visible", timeout=5000)
-                await email_logo.click()
-                await page.wait_for_timeout(2000)
-            except Exception as e:
-                # Recheck if captcha became visible while trying to open dialog (in case of automatic redirect)
-                if (await page.locator("input[placeholder*='verification code']").count() > 0) or "verification" in page.url.lower():
-                    print("[INFO] Verification page redirected during dialog wait. Proceeding...")
-                else:
-                    print(f"[ERROR] Could not click email tab logo: {e}")
-                    return await save_debug_and_exit(f"Could not click email tab logo: {e}")
-                
-            # If not already on verification page, enter credentials
-            if not ((await page.locator("input[placeholder*='verification code']").count() > 0) or "verification" in page.url.lower()):
-                print("[INFO] Entering credentials...")
-                try:
-                    await page.locator("input[placeholder*='email']").first.fill(USER_EMAIL)
-                    await page.locator("input[type='password']").first.fill(USER_PASS)
-                    await page.wait_for_timeout(500)
-                    
-                    await page.locator(".btn-class-login").first.click()
-                    print("[INFO] Credentials submitted. Waiting for authentication response...")
-                    
-                    # Poll for up to 15 seconds for captcha OR success cookies
-                    for _ in range(30):
-                        await page.wait_for_timeout(500)
-                        
-                        # Stop waiting if captcha is visible
-                        captcha_input = page.locator("input[placeholder*='verification code']").first
-                        if await captcha_input.count() > 0:
-                            break
-                            
-                        # Stop waiting if ndus cookie is set
-                        cookies = await context.cookies()
-                        ndus_val = next((c["value"] for c in cookies if c["name"] == "ndus"), None)
-                        if ndus_val:
-                            break
-                except Exception as e:
-                    return await save_debug_and_exit(f"Failed during credentials submission: {e}")
-            
-        # 4. Handle CAPTCHA / verification puzzle
-        attempt_limit = 5
-        for try_num in range(attempt_limit):
-            captcha_input = page.locator("#box #input, #box input, input[placeholder*='verification code']")
-            if await captcha_input.count() > 0 or "verification" in page.url.lower():
-                print(f"\n[WARNING] CAPTCHA / Verification challenge detected! (Attempt {try_num+1}/{attempt_limit})")
-                
-                # Locate the canvas captcha image
-                canvas_locator = page.locator("#box #canvas, #box canvas, #canvas").first
-                try:
-                    await canvas_locator.wait_for(state="visible", timeout=5000)
-                except Exception:
-                    pass
-                
-                # HTML Diagnostic of the captcha container
-                try:
-                    container_html = await page.evaluate("""() => {
-                        const canvas = document.querySelector('#box #canvas, #box canvas, #canvas');
-                        if (!canvas) return 'Canvas not found';
-                        let parent = canvas.parentElement;
-                        for (let i = 0; i < 5; i++) {
-                            if (parent && (parent.className.includes('dialog') || parent.className.includes('modal') || parent.className.includes('verify') || parent.className.includes('captcha'))) {
-                                return parent.outerHTML;
-                            }
-                            if (parent) parent = parent.parentElement;
-                        }
-                        return canvas.parentElement ? canvas.parentElement.outerHTML : 'Parent not found';
-                    }""")
-                    print(f"[CAPTCHA HTML DIAGNOSTIC]:\n{container_html}\n")
-                except Exception as e:
-                    print(f"[WARN] Failed to get captcha HTML: {e}")
-                
-                # Extract captcha image directly from browser canvas memory to prevent cropping/cuts
-                captcha_img_path = os.path.join(WORKSPACE_DIR, "captcha.png")
-                try:
-                    import base64
-                    base64_str = await page.evaluate("""() => {
-                        const canvas = document.querySelector('#box #canvas, #box canvas, #canvas');
-                        return canvas ? canvas.toDataURL('image/png') : null;
-                    }""")
-                    if base64_str and "," in base64_str:
-                        img_data = base64.b64decode(base64_str.split(",")[1])
-                        with open(captcha_img_path, "wb") as f:
-                            f.write(img_data)
-                        print("[INFO] Successfully extracted raw captcha image from canvas memory.")
-                    else:
-                        raise Exception("Canvas image data is empty or invalid.")
-                except Exception as e:
-                    print(f"[WARN] Failed to extract canvas via memory: {e}. Falling back to screenshot...")
-                    try:
-                        await canvas_locator.screenshot(path=captcha_img_path)
-                    except Exception:
-                        try:
-                            await page.screenshot(path=captcha_img_path)
-                        except Exception:
-                            pass
-                
-                # Send captcha notification to Telegram Bot if available
-                telegram_send_photo(
-                    captcha_img_path, 
-                    f"⚠️ *TeraBox CAPTCHA Detected\\!* \\(Attempt {try_num+1}/{attempt_limit}\\)\nSolving automatically if 2Captcha API Key is set\\."
-                )
-                
-                code = None
-                # Check if 2Captcha API Key is set
-                if TWO_CAPTCHA_API_KEY:
-                    print("[2CAPTCHA] Found API Key. Attempting automatic solving...")
-                    try:
-                        if os.path.exists(captcha_img_path):
-                            with open(captcha_img_path, "rb") as image_file:
-                                image_bytes = image_file.read()
-                        else:
-                            image_bytes = await canvas_locator.screenshot()
-                        code = urllib_solve_2captcha(TWO_CAPTCHA_API_KEY, image_bytes)
-                        
-                        # Client-side validation: if code is less than 4 characters, it is invalid and will block submit.
-                        # Refresh the captcha by clicking it and try again.
-                        if code and len(code) < 4:
-                            print(f"[WARN] Solved code '{code}' is too short (< 4 chars). Refreshing captcha...")
-                            await canvas_locator.click()
-                            await page.wait_for_timeout(1500)
-                            continue
-                    except Exception as e:
-                        print(f"[2CAPTCHA ERROR] Automatic solve failed: {e}")
-                
-                # Fallback to Manual terminal input if 2Captcha failed or is missing
-                if not code:
-                    print(f"[ACTION REQUIRED] Please open the image '{captcha_img_path}' to see the code.")
-                    if sys.stdin.isatty():
-                        code = input(">>> Enter the 4-letter CAPTCHA code shown in the image: ").strip()
-                    else:
-                        print("[ERROR] Non-interactive environment. Cannot solve captcha without terminal input.")
-                        await context.close()
-                        return None
-                
-                if code:
-                    try:
-                        # Target the specific visible input inside #box
-                        target_input = page.locator("#box #input, #box input").first
-                        await target_input.fill("")
-                        await page.wait_for_timeout(200)
-                        
-                        # Type character-by-character with human delay to trigger React/Vue JS event handlers
-                        await target_input.type(code, delay=100)
-                        await page.wait_for_timeout(500)
-                        
-                        # Capture and send screenshot of typed state to Telegram for verification
-                        debug_typed_path = os.path.join(WORKSPACE_DIR, "debug_typed.png")
-                        try:
-                            await page.screenshot(path=debug_typed_path)
-                            telegram_send_photo(debug_typed_path, f"📸 *CAPTCHA Typed State* \\(Attempt {try_num+1}\\)\nCode filled: `{code}`")
-                        except Exception as e:
-                            print(f"[WARN] Failed to send typed screenshot: {e}")
-
-                        # Force React state synchronization using native JS input & change events
-                        try:
-                            await page.evaluate(f"""() => {{
-                                const input = document.getElementById('input') || document.querySelector('#box input');
-                                if (input) {{
-                                    input.value = '{code}';
-                                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                                }}
-                            }}""")
-                            print("[INFO] Dispatched input and change events to sync React state.")
-                        except Exception as e:
-                            print(f"[WARN] Failed to dispatch events: {e}")
-
-                        try:
-                            # Try specific confirm button inside #box first
-                            confirm_btn = page.locator("#box #confirm, #box button, button#confirm, #confirm").first
-                            if await confirm_btn.count() > 0:
-                                print("[INFO] Clicking confirm button via direct ID selector...")
-                                await confirm_btn.click()
-                                await page.wait_for_timeout(200)
-                                # Natively click via JS in the browser page to ensure it fires React handlers
-                                try:
-                                    await page.evaluate("const btn = document.getElementById('confirm') || document.querySelector('#box button'); if(btn) btn.click();")
-                                except Exception:
-                                    pass
-                            else:
-                                # Search for the Confirm button in closest ancestor div elements
-                                confirm_btn = None
-                                for level in range(1, 6):
-                                    xpath_selector = f"xpath=ancestor::div[{level}]"
-                                    btn = target_input.locator(xpath_selector).locator("button, input[type='submit'], .confirm-btn, [class*='confirm'], :has-text('Confirm')").first
-                                    if await btn.count() > 0:
-                                        confirm_btn = btn
-                                        break
-                                
-                                if confirm_btn:
-                                    print(f"[INFO] Clicking found confirm button at ancestor level...")
-                                    await confirm_btn.click()
-                                    await page.wait_for_timeout(200)
-                                    try:
-                                        await page.evaluate("const btn = document.querySelector('#box button') || document.querySelector('button:has-text(\"Confirm\")'); if(btn) btn.click();")
-                                    except Exception:
-                                        pass
-                                else:
-                                    # Fallback to page-wide confirm button click
-                                    await page.locator("button:has-text('Confirm'), .confirm-btn, [class*='confirm']").first.click()
-                        except Exception as e:
-                            print(f"[WARN] Failed to click confirm button: {e}")
-                        
-                        print("[INFO] Captcha submitted. Waiting for session initialization...")
-                        
-                        # Poll for up to 12 seconds for the ndus cookie to appear
-                        cookie_found = False
-                        for i in range(24):
-                            await page.wait_for_timeout(500)
-                            
-                            # Scan for visible error/toast/tip alerts on the page
-                            try:
-                                alert_selectors = [
-                                    "[class*='error']", "[class*='toast']", "[class*='message']", 
-                                    "[class*='tip']", ".alert", "[class*='warn']", "[class*='popup']"
-                                ]
-                                for sel in alert_selectors:
-                                    elements = page.locator(sel)
-                                    count = await elements.count()
-                                    for idx in range(count):
-                                        el = elements.nth(idx)
-                                        if await el.is_visible():
-                                            txt = (await el.text_content() or "").strip()
-                                            if txt and len(txt) < 150:  # avoid printing huge logs
-                                                print(f"[PAGE ALERT] {txt}")
-                            except Exception:
-                                pass
-                                
-                            cookies = await context.cookies()
-                            if any(c["name"] == "ndus" for c in cookies):
-                                cookie_found = True
-                                break
-                                
-                        if cookie_found:
-                            print("[INFO] New ndus cookie successfully detected in browser context.")
-                            break
-                    except Exception as e:
-                        print(f"[ERROR] Failed to submit captcha: {e}")
-            else:
+            cookies = await context.cookies()
+            if any(c["name"] == "ndus" for c in cookies):
+                cookie_found = True
                 break
-            
-        # 5. Success verification
+                
+        if cookie_found:
+            print("[INFO] New ndus cookie successfully detected in browser context.")
+
+        # 7. Success verification
         ndus_val, cookie_header = await collect_browser_session("Post-login browser session")
         if cookie_header and (urllib_verify_cookie_header(cookie_header) or ndus_val):
             # Clean up captcha file if exists
