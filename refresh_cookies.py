@@ -576,9 +576,16 @@ async def perform_autologin():
                         await captcha_input.first.fill(code)
                         await page.wait_for_timeout(500)
                         
-                        # Click the Confirm button (precise selector)
-                        confirm_btn = page.locator("button:has-text('Confirm'), input[type='submit'], .confirm-btn, [class*='confirm']").first
-                        await confirm_btn.click()
+                        # Submit by pressing Enter key in input field and clicking relative submit button
+                        await captcha_input.first.press("Enter")
+                        
+                        try:
+                            # Try to click the confirm button specifically inside the same form as the input box
+                            confirm_btn = captcha_input.locator("xpath=ancestor::form").locator("button, input[type='submit'], .confirm-btn, [class*='confirm']").first
+                            if await confirm_btn.count() > 0:
+                                await confirm_btn.click()
+                        except Exception:
+                            pass
                         
                         print("[INFO] Captcha submitted. Waiting for session initialization...")
                         
