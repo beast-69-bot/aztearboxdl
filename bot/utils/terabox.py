@@ -157,56 +157,15 @@ def trigger_cookie_refresh() -> bool:
 
 def check_ndus_cookie() -> bool:
     """
-    Verifies if the configured NDUS_COOKIE is valid and active.
-    If not, runs refresh_cookies.py and retries.
+    Verifies if the configured NDUS_COOKIE is present.
+    If not, runs refresh_cookies.py to perform automated login.
     """
-
-    def _is_valid():
-        if not config.NDUS_COOKIE:
-            return False
-
-        session = curl_requests.Session(impersonate="chrome110")
-        if config.STATIC_PROXY:
-            session.proxies = format_curl_proxy(config.STATIC_PROXY)
-            print("[INFO] Verifying cookie using configured STATIC_PROXY...")
-            
-        session.cookies.update({"ndus": config.NDUS_COOKIE})
-        api_url = "https://www.terabox.com/api/list?dir=%2F&num=10&page=1"
-
-        try:
-            headers = dict(HEADERS)
-            cookie_header = _auth_cookie_header()
-            if cookie_header:
-                headers["Cookie"] = cookie_header
-            resp = session.get(api_url, headers=headers, timeout=6)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get("errno") == 0:
-                    return True
-        except Exception as e:
-            if config.STATIC_PROXY:
-                print(f"[WARN] Static proxy verification failed: {e}")
-
-        return False
-
-    if _is_valid():
-        print("NDUS_COOKIE is VALID.")
-        return True
-
-    print("NDUS_COOKIE is INVALID/EXPIRED. Triggering auto-cookie-refresh...")
-    success = trigger_cookie_refresh()
-    if success and _is_valid():
-        print("NDUS_COOKIE is now VALID after auto-refresh.")
-        return True
-    if success:
-        print("Auto-refresh script completed, but refreshed NDUS_COOKIE did not validate.")
-
-    if _is_valid():
-        print("NDUS_COOKIE verified valid after fallback check.")
-        return True
-
-    print("NDUS_COOKIE is still INVALID after auto-refresh.")
-    return False
+    if not config.NDUS_COOKIE:
+        print("NDUS_COOKIE is missing. Triggering auto-cookie-refresh...")
+        return trigger_cookie_refresh()
+        
+    print("NDUS_COOKIE is present. Allowing bot startup. Runtime check will auto-refresh if it is actually expired.")
+    return True
 
 
 def _extract_info_via_session(session, first_url: str, short: str, first_origin: str, cookie_header: str) -> dict | None:
