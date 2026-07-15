@@ -21,3 +21,8 @@ static/extension.zip
 # OS
 .DS_Store
 Thumbs.db
+
+# Secrets and Sessions
+.env
+.terabox_session/
+

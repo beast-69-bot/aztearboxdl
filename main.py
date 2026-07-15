@@ -212,7 +212,10 @@ async def api_beacon(url: str, page: str = ""):
     """
     from fastapi.responses import Response
     
-    if url and url.startswith("http"):
+    # Reject if it's just the DiskWala share page URL (not a real download URL)
+    is_share_url = "diskwala.com/app/" in url or "diskwala.com/file/" in url
+    
+    if url and url.startswith("http") and not is_share_url:
         share_url = normalize_url(page) if page else "unknown"
         
         if share_url not in stored_links:
@@ -220,10 +223,12 @@ async def api_beacon(url: str, page: str = ""):
         stored_links[share_url]["download_url"] = url
         stored_links[share_url]["url"] = url
         
-        print(f"🎯 [BEACON] Captured URL for {share_url}:")
-        print(f"   → {url}")
+        print("[BEACON] Captured real download URL for:", share_url)
+        print("  ->", url[:100])
+    else:
+        print("[BEACON] Rejected URL (share page, not download):", url[:80])
     
-    # Return a tiny 1x1 transparent PNG so the Image() doesn't throw an error
+    # Return a tiny 1x1 transparent PNG
     PNG_1x1 = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82'
     return Response(content=PNG_1x1, media_type="image/png", headers={
         "Access-Control-Allow-Origin": "*",

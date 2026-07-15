@@ -157,11 +157,7 @@ if(copyBtn){
             </span>
             <div style="background: rgba(99,102,241,0.15); border: 1px solid rgba(99,102,241,0.4); border-radius: 12px; padding: 16px; margin-bottom: 14px;">
                 <div style="font-size:0.85rem; color:#c7d2fe; margin-bottom:10px; font-weight:600; letter-spacing:0.3px;">STEP 1 — Drag this button to your bookmarks bar:</div>
-                <a id="bookmarklet-btn" href="${bookmarkletCode}" 
-                   style="display:inline-block; background: linear-gradient(135deg,#6366f1,#8b5cf6); color:#fff; padding: 10px 20px; border-radius: 8px; text-decoration:none; font-weight:700; font-size:0.95rem; cursor:grab; border: 2px dashed rgba(255,255,255,0.3);"
-                   onclick="event.preventDefault(); alert('Drag this button to your Bookmarks Bar, then click it on the DiskWala page!')">
-                    ⚡ DiskWala Bridge
-                </a>
+                <div id="bookmarklet-placeholder"></div>
                 <div style="font-size:0.75rem; color:#818cf8; margin-top:8px;">👆 Drag this to your bookmarks bar (Ctrl+Shift+B to show it)</div>
             </div>
             <div style="background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.3); border-radius: 12px; padding: 16px; margin-bottom: 14px;">
@@ -173,6 +169,18 @@ if(copyBtn){
                 <i class="fa-solid fa-circle-notch fa-spin"></i> Listening for bridge connection...
             </div>
         `;
+        
+        // Build the bookmarklet anchor PROGRAMMATICALLY to avoid HTML encoding issues
+        const anchor = document.createElement('a');
+        anchor.id = 'bookmarklet-btn';
+        anchor.href = bookmarkletCode;  // set href directly — no HTML encoding issues
+        anchor.textContent = '⚡ DiskWala Bridge';
+        anchor.style.cssText = 'display:inline-block; background: linear-gradient(135deg,#6366f1,#8b5cf6); color:#fff; padding: 10px 20px; border-radius: 8px; text-decoration:none; font-weight:700; font-size:0.95rem; cursor:grab; border: 2px dashed rgba(255,255,255,0.3);';
+        anchor.addEventListener('click', (e) => {
+            e.preventDefault();
+            alert('Drag this button to your Bookmarks Bar (Ctrl+Shift+B to show it), then click it on the DiskWala page!');
+        });
+        document.getElementById('bookmarklet-placeholder').appendChild(anchor);
         
         loaderSection.classList.add("hidden");
         
