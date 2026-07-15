@@ -76,6 +76,26 @@ def _item_from_share_list_response(api_response) -> dict | None:
         "dlink": dlink,
     }
 
+def format_curl_proxy(proxy_str: str) -> dict:
+    if not proxy_str:
+        return {}
+    proxy_str = proxy_str.strip()
+    # Handle Proxy Cheap format (ip:port:username:password)
+    parts = proxy_str.split(":")
+    if len(parts) == 4:
+        ip, port, user, pwd = parts
+        formatted = f"http://{user}:{pwd}@{ip}:{port}"
+    else:
+        if not proxy_str.startswith("http://") and not proxy_str.startswith("https://"):
+            formatted = f"http://{proxy_str}"
+        else:
+            formatted = proxy_str
+            
+    return {
+        "http": formatted,
+        "https": formatted
+    }
+
 def trigger_cookie_refresh() -> bool:
     import subprocess
     import sys
@@ -128,7 +148,20 @@ def check_ndus_cookie() -> bool:
         session.cookies.update({"ndus": config.NDUS_COOKIE})
         api_url = "https://www.terabox.app/api/list?dir=%2F&num=10&page=1"
         
-        # 1. Try direct connection
+        # 1. Try static proxy if defined in .env
+        if config.STATIC_PROXY:
+            try:
+                proxy = format_curl_proxy(config.STATIC_PROXY)
+                print("[INFO] Verifying cookie using configured STATIC_PROXY...")
+                resp = session.get(api_url, headers=HEADERS, proxies=proxy, timeout=8)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("errno") == 0:
+                        return True
+            except Exception as e:
+                print(f"[WARN] Static proxy verification failed: {e}")
+
+        # 2. Try direct connection (fallback)
         try:
             resp = session.get(api_url, headers=HEADERS, timeout=6)
             if resp.status_code == 200:
@@ -182,11 +215,65 @@ def check_ndus_cookie() -> bool:
 def get_terabox_info(surl: str) -> dict | None:
     """
     Fetches file metadata from TeraBox using the public share URL ID.
-    First tries directly from VPS. If cookie errors occur, triggers auto-refresh and retries.
+    First tries via STATIC_PROXY if configured.
+    Otherwise falls back to direct connection and rotating proxies.
     """
     global vps_cached_proxies
     short = surl[1:] if surl.startswith("1") else surl
     
+    # ── TRY 0: STATIC PROXY (if configured) ──────────────────────────
+    if config.STATIC_PROXY:
+        print("Attempting connection via configured STATIC_PROXY...")
+        session = curl_requests.Session(impersonate="chrome110")
+        session.cookies.update({"ndus": config.NDUS_COOKIE})
+        proxy = format_curl_proxy(config.STATIC_PROXY)
+        session.proxies = proxy
+        first_url = f"https://dm.1024tera.com/sharing/link?surl={short}"
+        try:
+            response = session.get(first_url, headers=HEADERS, timeout=12)
+            if "verify" in response.url.lower() or "login" in response.url.lower() or "need verify" in response.text.lower() or '"errno":400141' in response.text:
+                print("STATIC_PROXY request was blocked by verification wall. Falling back to other methods...")
+            else:
+                match = re.search(r'fn%28%22(.*?)%22%29', response.text)
+                if match:
+                    jsToken = match.group(1)
+                    print("STATIC_PROXY extraction successful!")
+                    
+                    # Fetch share list
+                    api_url = "https://dm.1024tera.com/share/list"
+                    params = {
+                        "app_id": "250528",
+                        "jsToken": jsToken,
+                        "site_referer": "https://www.terabox.app/",
+                        "shorturl": short,
+                        "root": "1"
+                    }
+                    api_headers = {
+                        "Host": "dm.1024tera.com",
+                        "User-Agent": HEADERS["User-Agent"],
+                        "Accept": "application/json, text/plain, */*",
+                        "Accept-Language": "en-US,en;q=0.9",
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Referer": f"https://dm.1024tera.com/sharing/link?surl={short}&clearCache=1",
+                        "Origin": "https://dm.1024tera.com"
+                    }
+                    api_response = session.get(api_url, params=params, headers=api_headers, timeout=12)
+                    if api_response.status_code == 200:
+                        data = api_response.json()
+                        if data.get("errno") == 0 and "list" in data:
+                            file_list = data["list"]
+                            if file_list:
+                                item = file_list[0]
+                                dlink = item.get("dlink")
+                                if dlink:
+                                    return {
+                                        "filename": item.get("server_filename", "video.mp4"),
+                                        "size": int(item.get("size", 0)),
+                                        "dlink": dlink,
+                                    }
+        except Exception as e:
+            print(f"STATIC_PROXY extraction failed: {e}. Falling back...")
+
     # ── FIRST TRY: Direct VPS IP ─────────────────────────────────────
     print("Attempting direct connection from VPS IP...")
     session = curl_requests.Session(impersonate="chrome110")
