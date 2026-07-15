@@ -4,9 +4,9 @@ import sys
 import json
 import asyncio
 import argparse
-from dotenv import load_dotenv
-import httpx
-from playwright.async_api import async_playwright
+import base64
+import urllib.request
+import urllib.parse
 
 # Reconfigure stdout to use UTF-8 on Windows to prevent encoding errors
 if sys.platform == "win32":
@@ -25,10 +25,24 @@ args = parser.parse_args()
 WORKSPACE_DIR = r"c:\Users\anshu\OneDrive\Documents\diskwala new latest"
 PARENT_DIR = r"c:\Users\anshu\OneDrive\Documents"
 
+# Manual dotenv loader to remove python-dotenv dependency
+def manual_load_dotenv(dotenv_path):
+    if not os.path.exists(dotenv_path):
+        return
+    with open(dotenv_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, val = line.split("=", 1)
+                os.environ[key.strip()] = val.strip().strip('"').strip("'")
+
 # Load credentials from root .env
-load_dotenv(os.path.join(WORKSPACE_DIR, ".env"))
+manual_load_dotenv(os.path.join(WORKSPACE_DIR, ".env"))
 USER_EMAIL = os.getenv("TERABOX_EMAIL")
 USER_PASS = os.getenv("TERABOX_PASSWORD")
+TWO_CAPTCHA_API_KEY = os.getenv("TWO_CAPTCHA_API_KEY")
 
 # Destination Paths to Update
 TARGET_PATHS = {
@@ -41,8 +55,8 @@ TARGET_PATHS = {
     "faphouse_cookies_txt": os.path.join(PARENT_DIR, "AZ NETWORK TG BOTS", "faphouse_cookies.txt"),
 }
 
-async def verify_ndus(ndus):
-    """Verify if the ndus cookie is currently valid."""
+def urllib_verify_ndus(ndus):
+    """Verify if the ndus cookie is currently valid using urllib."""
     if not ndus:
         return False
     
@@ -52,28 +66,59 @@ async def verify_ndus(ndus):
         "Cookie": f"ndus={ndus}"
     }
     
-    # Try multiple domains to accommodate regional redirects
-    test_urls = [
-        "https://dm.1024terabox.com/api/list?dir=%2F&num=10&page=1",
-        "https://www.terabox.app/api/list?dir=%2F&num=10&page=1",
-        "https://www.1024terabox.com/api/list?dir=%2F&num=10&page=1"
-    ]
-    
+    url = "https://www.terabox.app/api/list?dir=%2F&num=10&page=1"
+    req = urllib.request.Request(url, headers=headers)
     try:
-        async with httpx.AsyncClient() as client:
-            for url in test_urls:
-                try:
-                    response = await client.get(url, headers=headers, timeout=10.0)
-                    if response.status_code == 200:
-                        data = response.json()
-                        if data.get("errno") == 0:
-                            return True
-                except Exception:
-                    pass
+        with urllib.request.urlopen(req, timeout=10.0) as response:
+            if response.status == 200:
+                data = json.loads(response.read().decode('utf-8'))
+                return data.get("errno") == 0
     except Exception:
         pass
-        
     return False
+
+def urllib_solve_2captcha(api_key, image_bytes):
+    """Solve the captcha image using 2Captcha API and urllib."""
+    encoded_string = base64.b64encode(image_bytes).decode('utf-8')
+    submit_url = "https://2captcha.com/in.php"
+    payload = {
+        "method": "base64",
+        "key": api_key,
+        "body": encoded_string,
+        "json": 1
+    }
+    
+    try:
+        data_encoded = urllib.parse.urlencode(payload).encode('utf-8')
+        req = urllib.request.Request(submit_url, data=data_encoded)
+        with urllib.request.urlopen(req, timeout=15.0) as res:
+            res_data = json.loads(res.read().decode('utf-8'))
+            if res_data.get("status") != 1:
+                print(f"[2CAPTCHA ERROR] Submission failed: {res_data.get('request')}")
+                return None
+            captcha_id = res_data["request"]
+            print(f"[2CAPTCHA] Submitted successfully. ID: {captcha_id}. Waiting for solution...")
+            
+            # Poll for solution
+            poll_url = f"https://2captcha.com/res.php?key={api_key}&action=get&id={captcha_id}&json=1"
+            for attempt in range(30):
+                import time
+                time.sleep(2)
+                req_poll = urllib.request.Request(poll_url)
+                with urllib.request.urlopen(req_poll, timeout=10.0) as res_poll:
+                    poll_data = json.loads(res_poll.read().decode('utf-8'))
+                    if poll_data.get("status") == 1:
+                        code = poll_data["request"]
+                        print(f"[2CAPTCHA] Solved: {code}")
+                        return code
+                    elif poll_data.get("request") == "CAPCHA_NOT_READY":
+                        continue
+                    else:
+                        print(f"[2CAPTCHA ERROR] Polling failed: {poll_data.get('request')}")
+                        return None
+    except Exception as e:
+        print(f"[2CAPTCHA ERROR] Request failed: {e}")
+    return None
 
 def update_env_variable(env_path, key, value):
     """Update a specific key-value pair in a .env file."""
@@ -135,7 +180,9 @@ def update_files(new_ndus):
         print("[SUCCESS] Updated faphouse_cookies.txt")
 
 async def perform_autologin():
-    """Launch Playwright browser, type credentials, detect captcha and wait for manual solution."""
+    """Launch Playwright browser, type credentials, detect captcha and solve manually or via 2Captcha."""
+    from playwright.async_api import async_playwright
+    
     async with async_playwright() as p:
         user_data_dir = os.path.join(WORKSPACE_DIR, ".terabox_session")
         print(f"[INFO] Launching Chromium (headless={args.headless}) using profile {user_data_dir}...")
@@ -153,7 +200,7 @@ async def perform_autologin():
         try:
             cookies = await context.cookies()
             ndus_val = next((c["value"] for c in cookies if c["name"] == "ndus"), None)
-            if ndus_val and await verify_ndus(ndus_val):
+            if ndus_val and urllib_verify_ndus(ndus_val):
                 print("[SUCCESS] Saved browser session is already active and valid!")
                 await context.close()
                 return ndus_val
@@ -180,13 +227,10 @@ async def perform_autologin():
             await page.wait_for_timeout(2000)
         except Exception as e:
             print(f"[ERROR] Could not click email tab logo: {e}")
-            screenshot_path = os.path.join(WORKSPACE_DIR, "debug_screenshot.png")
-            await page.screenshot(path=screenshot_path)
-            print(f"[DEBUG] Saved debug screenshot to {screenshot_path}")
             await context.close()
             return None
             
-        print("[INFO] Filling email and password...")
+        print("[INFO] Entering credentials...")
         try:
             await page.locator("input[placeholder*='email']").first.fill(USER_EMAIL)
             await page.locator("input[type='password']").first.fill(USER_PASS)
@@ -197,9 +241,6 @@ async def perform_autologin():
             await page.wait_for_timeout(4000)
         except Exception as e:
             print(f"[ERROR] Failed to input login credentials: {e}")
-            screenshot_path = os.path.join(WORKSPACE_DIR, "debug_screenshot.png")
-            await page.screenshot(path=screenshot_path)
-            print(f"[DEBUG] Saved debug screenshot to {screenshot_path}")
             await context.close()
             return None
             
@@ -208,37 +249,68 @@ async def perform_autologin():
         if await captcha_input.count() > 0 or "verification" in page.url.lower():
             print("\n[WARNING] CAPTCHA / Verification challenge detected!")
             
-            captcha_img_path = os.path.join(WORKSPACE_DIR, "captcha.png")
-            await page.screenshot(path=captcha_img_path)
-            print(f"[ACTION REQUIRED] Please open the image '{captcha_img_path}' to see the code.")
+            # Locate the canvas captcha image
+            canvas_locator = page.locator("#canvas").first
             
-            if sys.stdin.isatty():
-                code = input(">>> Enter the 4-letter CAPTCHA code shown in the image: ").strip()
+            # Check if 2Captcha API Key is set
+            if TWO_CAPTCHA_API_KEY:
+                print("[2CAPTCHA] Found API Key. Attempting automatic solving...")
                 try:
-                    await captcha_input.first.fill(code)
-                    await page.wait_for_timeout(500)
-                    await page.locator("text=Confirm").first.click()
-                    print("[INFO] Captcha submitted. Processing...")
-                    await page.wait_for_timeout(5000)
+                    await canvas_locator.wait_for(state="visible", timeout=5000)
+                    image_bytes = await canvas_locator.screenshot()
+                    code = urllib_solve_2captcha(TWO_CAPTCHA_API_KEY, image_bytes)
+                    
+                    if code:
+                        await captcha_input.first.fill(code)
+                        await page.wait_for_timeout(500)
+                        await page.locator("text=Confirm").first.click()
+                        print("[INFO] Captcha submitted. Processing...")
+                        await page.wait_for_timeout(5000)
                 except Exception as e:
-                    print(f"[ERROR] Failed to submit captcha: {e}")
+                    print(f"[2CAPTCHA ERROR] Automatic solve failed: {e}")
+            
+            # Fallback to Manual terminal input if 2Captcha failed or is missing
+            # Recheck if captcha is still there
+            if await captcha_input.count() > 0:
+                captcha_img_path = os.path.join(WORKSPACE_DIR, "captcha.png")
+                try:
+                    await canvas_locator.screenshot(path=captcha_img_path)
+                    print(f"[ACTION REQUIRED] Please open the image '{captcha_img_path}' to see the code.")
+                except Exception as e:
+                    print(f"[WARN] Could not screenshot canvas: {e}. Screenshotting full page instead.")
+                    await page.screenshot(path=captcha_img_path)
+                
+                if sys.stdin.isatty():
+                    code = input(">>> Enter the 4-letter CAPTCHA code shown in the image: ").strip()
+                    try:
+                        await captcha_input.first.fill(code)
+                        await page.wait_for_timeout(500)
+                        await page.locator("text=Confirm").first.click()
+                        print("[INFO] Captcha submitted. Processing...")
+                        await page.wait_for_timeout(5000)
+                    except Exception as e:
+                        print(f"[ERROR] Failed to submit captcha manually: {e}")
+                        await context.close()
+                        return None
+                else:
+                    print("[ERROR] Non-interactive environment. Cannot solve captcha without terminal input.")
                     await context.close()
                     return None
-            else:
-                print("[ERROR] Non-interactive environment. Cannot solve captcha programmatically.")
-                await context.close()
-                return None
             
         # 4. Success verification
         cookies = await context.cookies()
         ndus_val = next((c["value"] for c in cookies if c["name"] == "ndus"), None)
-        if ndus_val and await verify_ndus(ndus_val):
+        if ndus_val and urllib_verify_ndus(ndus_val):
+            # Clean up captcha file if exists
+            captcha_img_path = os.path.join(WORKSPACE_DIR, "captcha.png")
+            if os.path.exists(captcha_img_path):
+                try:
+                    os.remove(captcha_img_path)
+                except Exception:
+                    pass
             await context.close()
             return ndus_val
             
-        screenshot_path = os.path.join(WORKSPACE_DIR, "debug_screenshot.png")
-        await page.screenshot(path=screenshot_path)
-        print(f"[DEBUG] Saved debug screenshot to {screenshot_path}")
         await context.close()
         return None
 
@@ -259,7 +331,7 @@ async def main():
             current_ndus = match.group(1).strip()
             
     print("[INFO] Verifying current session cookie...")
-    if await verify_ndus(current_ndus):
+    if urllib_verify_ndus(current_ndus):
         print("[SUCCESS] Current cookie is already valid! Synchronizing configs just in case...")
         update_files(current_ndus)
         return
