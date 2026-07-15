@@ -317,6 +317,45 @@ def get_terabox_info(surl: str) -> dict | None:
     return _extract_info_via_session(session, first_url, short, first_origin, cookie_header)
 
 
+# ── Multi-Fragment Download Config ────────────────────────────────────────
+DOWNLOAD_WORKERS = 5          # parallel connections per file
+MIN_CHUNK_SIZE = 10 * 1024 * 1024   # 10 MB minimum per chunk
+
+
+def _build_dl_headers(referer=None, origin=None) -> dict:
+    h = {
+        "User-Agent": HEADERS["User-Agent"],
+        "Accept": "*/*",
+        "Accept-Encoding": "identity",
+        "Connection": "keep-alive",
+        "Cookie": _auth_cookie_header(),
+    }
+    if referer:
+        h["Referer"] = referer
+    if origin:
+        h["Origin"] = origin
+    return h
+
+
+def _download_chunk(dlink: str, start: int, end: int, headers: dict, filepath_chunk: str, timeout: int = 60) -> int:
+    """Download a single byte-range chunk and write to a temp file. Returns bytes downloaded."""
+    chunk_headers = dict(headers)
+    chunk_headers["Range"] = f"bytes={start}-{end}"
+    session = curl_requests.Session(impersonate="chrome110")
+    if config.STATIC_PROXY:
+        session.proxies = format_curl_proxy(config.STATIC_PROXY)
+    resp = session.get(dlink, headers=chunk_headers, stream=True, timeout=timeout)
+    if resp.status_code not in (200, 206):
+        raise Exception(f"Chunk download failed: HTTP {resp.status_code} for range {start}-{end}")
+    downloaded = 0
+    with open(filepath_chunk, "wb") as f:
+        for data in resp.iter_content(chunk_size=512 * 1024):
+            if data:
+                f.write(data)
+                downloaded += len(data)
+    return downloaded
+
+
 async def download_file(
     dlink: str,
     filename: str,
@@ -325,63 +364,147 @@ async def download_file(
     referer: str | None = None,
     origin: str | None = None,
 ) -> str:
-    """Downloads directly using VPS IP to preserve full network bandwidth."""
+    """
+    Downloads from TeraBox using multi-fragment parallel chunks (HTTP Range requests).
+    With N workers, effective speed = N × per-connection speed.
+    Falls back to single-stream if server does not support Range.
+    """
     os.makedirs("downloads", exist_ok=True)
-    filepath = f"downloads/{uuid.uuid4().hex[:8]}_{filename}"
+    safe_name = filename.replace("/", "_").replace("\\", "_")
+    filepath = f"downloads/{uuid.uuid4().hex[:8]}_{safe_name}"
+    headers = _build_dl_headers(referer, origin)
 
-    session = curl_requests.Session(impersonate="chrome110")
-    session.cookies.update({"ndus": config.NDUS_COOKIE})
+    # ── Step 1: HEAD request — check Range support & get content-length ──
+    print(f"Probing download URL for Range support: {dlink[:80]}...")
+    try:
+        head_session = curl_requests.Session(impersonate="chrome110")
+        head_resp = await asyncio.to_thread(
+            head_session.head, dlink, headers=headers, timeout=15, allow_redirects=True
+        )
+        accept_ranges = head_resp.headers.get("Accept-Ranges", "none").lower()
+        content_length = int(head_resp.headers.get("Content-Length", total_size or 0))
+        supports_range = accept_ranges == "bytes" and content_length > 0
+        print(f"Accept-Ranges: {accept_ranges} | Content-Length: {content_length} bytes | Range support: {supports_range}")
+    except Exception as e:
+        print(f"HEAD request failed ({e}). Assuming no Range support.")
+        supports_range = False
+        content_length = total_size or 0
 
-    headers = {
-        "User-Agent": HEADERS["User-Agent"],
-        "Accept": "*/*",
-        "Accept-Encoding": "identity",
-        "Connection": "keep-alive",
-    }
-    if referer:
-        headers["Referer"] = referer
-    if origin:
-        headers["Origin"] = origin
-    if config.NDUS_COOKIE:
-        headers["Cookie"] = _auth_cookie_header()
+    # Use actual content length if we have it
+    file_size = content_length or total_size
 
-    print(f"Connecting to download link: {dlink} ...")
-    req = await asyncio.to_thread(
-        session.get, dlink, headers=headers, stream=True, timeout=20
-    )
-    if req.status_code != 200:
-        raise Exception(f"TeraBox server error: HTTP {req.status_code}")
+    # ── Step 2: Decide strategy ───────────────────────────────────────────
+    num_workers = DOWNLOAD_WORKERS if supports_range and file_size >= MIN_CHUNK_SIZE else 1
+    print(f"Download strategy: {num_workers} parallel worker(s) for {file_size / 1024 / 1024:.1f} MB")
 
-    print("Connection established. Beginning file download stream...")
     start_time = time.time()
-    downloaded = 0
 
-    iterator = req.iter_content(chunk_size=1024 * 1024)
+    if num_workers == 1:
+        # ── Single-stream fallback ────────────────────────────────────────
+        print("Using single-stream download...")
+        session = curl_requests.Session(impersonate="chrome110")
+        req = await asyncio.to_thread(
+            session.get, dlink, headers=headers, stream=True, timeout=30
+        )
+        if req.status_code != 200:
+            raise Exception(f"TeraBox server error: HTTP {req.status_code}")
 
-    def get_next_chunk(it):
-        try:
-            return next(it)
-        except StopIteration:
-            return None
-        except Exception as err:
-            print(f"Error reading chunk: {err}")
-            raise err
+        downloaded = 0
+        iterator = req.iter_content(chunk_size=1024 * 1024)
 
-    with open(filepath, "wb") as f:
-        while True:
-            chunk = await asyncio.to_thread(get_next_chunk, iterator)
-            if chunk is None:
-                break
-            f.write(chunk)
-            downloaded += len(chunk)
-            await progress_callback(
-                current=downloaded,
-                total=total_size,
-                message=message,
-                action="Downloading to VPS",
-                filename=filename,
-                start_time=start_time,
+        def get_next(it):
+            try:
+                return next(it)
+            except StopIteration:
+                return None
+
+        with open(filepath, "wb") as f:
+            while True:
+                chunk = await asyncio.to_thread(get_next, iterator)
+                if chunk is None:
+                    break
+                f.write(chunk)
+                downloaded += len(chunk)
+                await progress_callback(
+                    current=downloaded, total=file_size,
+                    message=message, action="Downloading (1x)", filename=filename, start_time=start_time,
+                )
+    else:
+        # ── Multi-fragment parallel download ──────────────────────────────
+        chunk_size = file_size // num_workers
+        ranges = []
+        for i in range(num_workers):
+            start = i * chunk_size
+            end = (file_size - 1) if i == num_workers - 1 else (start + chunk_size - 1)
+            ranges.append((start, end))
+
+        print(f"Splitting into {num_workers} chunks:")
+        chunk_files = []
+        for i, (s, e) in enumerate(ranges):
+            cf = f"{filepath}.part{i}"
+            chunk_files.append(cf)
+            print(f"  Chunk {i}: bytes {s}–{e} ({(e-s+1)/1024/1024:.1f} MB) → {cf}")
+
+        # Track total downloaded across all workers
+        downloaded_per_chunk = [0] * num_workers
+        total_downloaded = 0
+
+        async def download_chunk_async(idx: int, start: int, end: int, chunk_file: str):
+            nonlocal total_downloaded
+            bytes_done = await asyncio.to_thread(
+                _download_chunk, dlink, start, end, headers, chunk_file
             )
+            downloaded_per_chunk[idx] = bytes_done
+            total_downloaded = sum(downloaded_per_chunk)
+            return bytes_done
 
-    print(f"File download completed successfully: {filepath}")
+        # Progress reporter task
+        async def report_progress():
+            while total_downloaded < file_size:
+                await progress_callback(
+                    current=total_downloaded, total=file_size,
+                    message=message,
+                    action=f"Downloading ({num_workers}x parallel)",
+                    filename=filename, start_time=start_time,
+                )
+                await asyncio.sleep(3)
+
+        # Run all chunks in parallel + progress reporter
+        tasks = [download_chunk_async(i, s, e, chunk_files[i]) for i, (s, e) in enumerate(ranges)]
+        progress_task = asyncio.create_task(report_progress())
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        progress_task.cancel()
+
+        # Check for errors
+        for i, r in enumerate(results):
+            if isinstance(r, Exception):
+                raise Exception(f"Chunk {i} failed: {r}")
+
+        # ── Merge chunk files into final file ─────────────────────────────
+        print(f"Merging {num_workers} chunks → {filepath}")
+        with open(filepath, "wb") as out:
+            for cf in chunk_files:
+                with open(cf, "rb") as part:
+                    while True:
+                        data = part.read(4 * 1024 * 1024)
+                        if not data:
+                            break
+                        out.write(data)
+                os.remove(cf)
+                print(f"  Merged and removed: {cf}")
+
+        elapsed = time.time() - start_time
+        avg_speed = file_size / elapsed / 1024 / 1024 if elapsed > 0 else 0
+        print(f"Multi-fragment download complete! Avg speed: {avg_speed:.1f} MB/s")
+
+        # Final progress update
+        await progress_callback(
+            current=file_size, total=file_size,
+            message=message,
+            action=f"Downloading ({num_workers}x parallel)",
+            filename=filename, start_time=start_time,
+        )
+
+    print(f"File download completed: {filepath}")
     return filepath
