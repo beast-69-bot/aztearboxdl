@@ -295,9 +295,7 @@ async def _get_info_via_playwright(surl: str) -> dict | None:
     cookie, navigates to the sharing URL, and intercepts the /share/list
     network response to extract the dlink.
 
-    Used when the Python API approach fails with errno 400141 (account-level
-    sharing API restriction). A real browser context often bypasses this block
-    because TeraBox signs dlinks differently for full browser sessions.
+    Optimized: exits immediately once dlink is captured (no full page wait).
     """
     try:
         from playwright.async_api import async_playwright
@@ -312,42 +310,51 @@ async def _get_info_via_playwright(surl: str) -> dict | None:
     print(f"[PLAYWRIGHT] Launching browser for: {share_url}")
 
     captured = {}
+    dlink_event = asyncio.Event()  # signals early exit once dlink is found
+
+    # Build proxy config
+    proxy_cfg = None
+    if config.STATIC_PROXY:
+        parts = config.STATIC_PROXY.split(":")
+        if len(parts) == 4:
+            proxy_cfg = {
+                "server": f"http://{parts[0]}:{parts[1]}",
+                "username": parts[2],
+                "password": parts[3],
+            }
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
             args=["--no-sandbox", "--disable-dev-shm-usage"],
-            proxy={"server": f"http://{config.STATIC_PROXY.split(':')[0]}:{config.STATIC_PROXY.split(':')[1]}",
-                   "username": config.STATIC_PROXY.split(':')[2],
-                   "password": config.STATIC_PROXY.split(':')[3]}
-            if config.STATIC_PROXY and len(config.STATIC_PROXY.split(':')) == 4 else None,
+            proxy=proxy_cfg,
         )
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         )
 
-        # Inject cookies into browser context
+        # Inject auth cookies
         if cookie_header:
             cookies = []
             for part in cookie_header.split(";"):
                 part = part.strip()
                 if "=" in part:
                     name, value = part.split("=", 1)
-                    cookies.append({
-                        "name": name.strip(),
-                        "value": value.strip(),
-                        "domain": ".1024tera.com",
-                        "path": "/",
-                    })
+                    name = name.strip()
+                    value = value.strip()
+                    if name and value:
+                        # Add cookie for both root and subdomain
+                        for domain in [".1024tera.com", "dm.1024tera.com"]:
+                            cookies.append({"name": name, "value": value, "domain": domain, "path": "/"})
             if cookies:
                 await context.add_cookies(cookies)
-                print(f"[PLAYWRIGHT] Injected {len(cookies)} cookies.")
+                print(f"[PLAYWRIGHT] Injected {len(cookies)//2} cookies for 2 domains.")
 
         page = await context.new_page()
 
-        # Intercept /share/list response
+        # Intercept /share/list response — signal early exit on dlink
         async def handle_response(response):
-            if "/share/list" in response.url and not captured:
+            if "/share/list" in response.url and not dlink_event.is_set():
                 try:
                     body = await response.json()
                     if body.get("errno") == 0 and body.get("list"):
@@ -359,9 +366,10 @@ async def _get_info_via_playwright(surl: str) -> dict | None:
                             captured["size"] = int(item.get("size", 0))
                             captured["referer"] = share_url
                             captured["origin"] = origin
-                            print(f"[PLAYWRIGHT] Intercepted dlink: {dlink[:60]}...")
+                            print(f"[PLAYWRIGHT] ✅ dlink captured: {dlink[:70]}...")
+                            dlink_event.set()  # signal early exit!
                         else:
-                            print(f"[PLAYWRIGHT] /share/list errno=0 but no dlink. Keys: {list(item.keys())}")
+                            print(f"[PLAYWRIGHT] /share/list OK but no dlink. Keys: {list(item.keys())}")
                     else:
                         print(f"[PLAYWRIGHT] /share/list errno={body.get('errno')}")
                 except Exception as e:
@@ -369,13 +377,19 @@ async def _get_info_via_playwright(surl: str) -> dict | None:
 
         page.on("response", handle_response)
 
-        try:
-            await page.goto(share_url, wait_until="networkidle", timeout=25000)
-        except Exception as e:
-            print(f"[PLAYWRIGHT] Page load timeout/error: {e}")
+        # Navigate — don't wait for full page load, just start loading
+        nav_task = asyncio.create_task(
+            page.goto(share_url, wait_until="domcontentloaded", timeout=20000)
+        )
 
-        # Give a moment for any deferred XHR
-        await asyncio.sleep(2)
+        # Wait for EITHER dlink captured OR 20s timeout
+        try:
+            await asyncio.wait_for(dlink_event.wait(), timeout=20)
+            print("[PLAYWRIGHT] dlink found — stopping page load early.")
+            nav_task.cancel()
+        except asyncio.TimeoutError:
+            print("[PLAYWRIGHT] 20s timeout reached without dlink.")
+            nav_task.cancel()
 
         await browser.close()
 
