@@ -602,14 +602,20 @@ async def perform_autologin():
                     try:
                         # Target the specific visible input inside #box
                         target_input = page.locator("#box #input, #box input").first
-                        await target_input.click()
-                        await page.keyboard.press("Control+A")
-                        await page.keyboard.press("Backspace")
+                        await target_input.fill("")
                         await page.wait_for_timeout(200)
                         
                         # Type character-by-character with human delay to trigger React/Vue JS event handlers
                         await target_input.type(code, delay=100)
                         await page.wait_for_timeout(500)
+                        
+                        # Capture and send screenshot of typed state to Telegram for verification
+                        debug_typed_path = os.path.join(WORKSPACE_DIR, "debug_typed.png")
+                        try:
+                            await page.screenshot(path=debug_typed_path)
+                            telegram_send_photo(debug_typed_path, f"📸 *CAPTCHA Typed State* \\(Attempt {try_num+1}\\)\nCode filled: `{code}`")
+                        except Exception as e:
+                            print(f"[WARN] Failed to send typed screenshot: {e}")
 
                         try:
                             # Try specific confirm button inside #box first
