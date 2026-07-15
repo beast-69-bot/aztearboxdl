@@ -273,6 +273,12 @@ def update_env_variable(env_path, key, value):
     """Update a specific key-value pair in a .env file."""
     if not os.path.exists(env_path):
         return False
+        
+    # Wrap in double quotes if the value contains semicolons or spaces to prevent dotenv cutoff
+    if ";" in str(value) or " " in str(value):
+        formatted_value = f'"{value}"'
+    else:
+        formatted_value = value
     
     with open(env_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
@@ -281,13 +287,13 @@ def update_env_variable(env_path, key, value):
     updated = False
     for line in lines:
         if line.strip().startswith(f"{key}="):
-            new_lines.append(f"{key}={value}\n")
+            new_lines.append(f"{key}={formatted_value}\n")
             updated = True
         else:
             new_lines.append(line)
             
     if not updated:
-        new_lines.append(f"{key}={value}\n")
+        new_lines.append(f"{key}={formatted_value}\n")
         
     with open(env_path, "w", encoding="utf-8") as f:
         f.writelines(new_lines)
