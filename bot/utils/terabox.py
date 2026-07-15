@@ -288,33 +288,148 @@ def _extract_info_via_session(session, first_url: str, short: str, first_origin:
     return None
 
 
+
+async def _get_info_via_playwright(surl: str) -> dict | None:
+    """
+    Playwright-based fallback: launches a real browser session with the stored
+    cookie, navigates to the sharing URL, and intercepts the /share/list
+    network response to extract the dlink.
+
+    Used when the Python API approach fails with errno 400141 (account-level
+    sharing API restriction). A real browser context often bypasses this block
+    because TeraBox signs dlinks differently for full browser sessions.
+    """
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        print("[PLAYWRIGHT] playwright not installed. Skipping browser fallback.")
+        return None
+
+    origin = "https://dm.1024tera.com"
+    share_url = f"{origin}/sharing/link?surl={surl}"
+    cookie_header = _auth_cookie_header()
+
+    print(f"[PLAYWRIGHT] Launching browser for: {share_url}")
+
+    captured = {}
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+            proxy={"server": f"http://{config.STATIC_PROXY.split(':')[0]}:{config.STATIC_PROXY.split(':')[1]}",
+                   "username": config.STATIC_PROXY.split(':')[2],
+                   "password": config.STATIC_PROXY.split(':')[3]}
+            if config.STATIC_PROXY and len(config.STATIC_PROXY.split(':')) == 4 else None,
+        )
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        )
+
+        # Inject cookies into browser context
+        if cookie_header:
+            cookies = []
+            for part in cookie_header.split(";"):
+                part = part.strip()
+                if "=" in part:
+                    name, value = part.split("=", 1)
+                    cookies.append({
+                        "name": name.strip(),
+                        "value": value.strip(),
+                        "domain": ".1024tera.com",
+                        "path": "/",
+                    })
+            if cookies:
+                await context.add_cookies(cookies)
+                print(f"[PLAYWRIGHT] Injected {len(cookies)} cookies.")
+
+        page = await context.new_page()
+
+        # Intercept /share/list response
+        async def handle_response(response):
+            if "/share/list" in response.url and not captured:
+                try:
+                    body = await response.json()
+                    if body.get("errno") == 0 and body.get("list"):
+                        item = body["list"][0]
+                        dlink = item.get("dlink", "")
+                        if dlink:
+                            captured["dlink"] = dlink
+                            captured["filename"] = item.get("server_filename", "video.mp4")
+                            captured["size"] = int(item.get("size", 0))
+                            captured["referer"] = share_url
+                            captured["origin"] = origin
+                            print(f"[PLAYWRIGHT] Intercepted dlink: {dlink[:60]}...")
+                        else:
+                            print(f"[PLAYWRIGHT] /share/list errno=0 but no dlink. Keys: {list(item.keys())}")
+                    else:
+                        print(f"[PLAYWRIGHT] /share/list errno={body.get('errno')}")
+                except Exception as e:
+                    print(f"[PLAYWRIGHT] Response parse error: {e}")
+
+        page.on("response", handle_response)
+
+        try:
+            await page.goto(share_url, wait_until="networkidle", timeout=25000)
+        except Exception as e:
+            print(f"[PLAYWRIGHT] Page load timeout/error: {e}")
+
+        # Give a moment for any deferred XHR
+        await asyncio.sleep(2)
+
+        await browser.close()
+
+    if captured.get("dlink"):
+        print("[PLAYWRIGHT] Successfully extracted dlink via browser.")
+        return captured
+
+    print("[PLAYWRIGHT] Browser session did not yield a dlink.")
+    return None
+
+
 def get_terabox_info(surl: str) -> dict | None:
     """
-    Fetches file metadata from TeraBox using static proxy, falling back to direct VPS connection.
+    Fetches file metadata from TeraBox.
+    Strategy:
+      1. Python API (anonymous HTML + share/list, then filemetas for dlink) — fast
+      2. Playwright browser fallback — slower but bypasses account-level blocks
     """
     short = surl[1:] if surl.startswith("1") else surl
 
     session = curl_requests.Session(impersonate="chrome110")
-    session.cookies.update({"ndus": config.NDUS_COOKIE})
     cookie_header = _auth_cookie_header()
 
     first_origin = "https://dm.1024tera.com"
     first_url = f"{first_origin}/sharing/link?surl={short}"
 
-    # Try static proxy first if set
+    # ── Attempt 1: Python API via static proxy ────────────────────────────
     if config.STATIC_PROXY:
-        print("Attempting extraction via configured STATIC_PROXY...")
+        print("Attempting extraction via STATIC_PROXY (Python API)...")
         session.proxies = format_curl_proxy(config.STATIC_PROXY)
         res = _extract_info_via_session(session, first_url, short, first_origin, cookie_header)
         if res:
             return res
-        print("STATIC_PROXY extraction was blocked or failed. Falling back to direct VPS IP...")
+        print("STATIC_PROXY extraction failed. Trying direct VPS IP...")
 
-    # Fallback to direct VPS connection
-    print("Attempting direct connection from VPS IP...")
-    session = curl_requests.Session(impersonate="chrome110")
-    session.cookies.update({"ndus": config.NDUS_COOKIE})
-    return _extract_info_via_session(session, first_url, short, first_origin, cookie_header)
+    # ── Attempt 2: Python API via direct VPS IP ───────────────────────────
+    print("Attempting extraction via direct VPS IP (Python API)...")
+    session2 = curl_requests.Session(impersonate="chrome110")
+    res2 = _extract_info_via_session(session2, first_url, short, first_origin, cookie_header)
+    if res2:
+        return res2
+
+    # ── Attempt 3: Playwright browser fallback ────────────────────────────
+    print("Python API failed. Falling back to Playwright browser extraction...")
+    try:
+        return asyncio.run(_get_info_via_playwright(short))
+    except RuntimeError:
+        # Already inside an event loop (called from async context)
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(_get_info_via_playwright(short))
+    except Exception as e:
+        print(f"Playwright fallback failed: {e}")
+        return None
+
 
 
 # ── Multi-Fragment Download Config ────────────────────────────────────────
