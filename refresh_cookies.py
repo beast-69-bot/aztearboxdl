@@ -137,17 +137,42 @@ def telegram_send_photo(photo_path, caption):
         print(f"[TELEGRAM ERROR] Failed to send photo: {e}")
     return False
 
-def urllib_verify_ndus(ndus):
-    """Verify if the ndus cookie is currently valid using urllib."""
-    if not ndus:
+def build_cookie_header(cookies):
+    """Build a Cookie header from Playwright cookies for TeraBox domains."""
+    allowed_domains = ("terabox.com", "terabox.app", "1024tera.com", "1024terabox.com")
+    pairs = []
+    seen = set()
+    for cookie in cookies:
+        name = cookie.get("name")
+        value = cookie.get("value")
+        domain = cookie.get("domain", "")
+        if not name or value is None:
+            continue
+        if not any(allowed in domain for allowed in allowed_domains):
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        pairs.append(f"{name}={value}")
+    return "; ".join(pairs)
+
+def get_cookie_value(cookies, name):
+    for cookie in cookies:
+        if cookie.get("name") == name and cookie.get("value"):
+            return cookie["value"]
+    return None
+
+def urllib_verify_cookie_header(cookie_header):
+    """Verify whether a browser Cookie header is accepted by TeraBox API."""
+    if not cookie_header:
         return False
-    
+
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
-        "Cookie": f"ndus={ndus}"
+        "Cookie": cookie_header,
     }
-    
+
     url = "https://www.terabox.app/api/list?dir=%2F&num=10&page=1"
     req = urllib.request.Request(url, headers=headers)
     try:
@@ -156,10 +181,17 @@ def urllib_verify_ndus(ndus):
         with urllib.request.urlopen(req, timeout=10.0, context=ctx) as response:
             if response.status == 200:
                 data = json.loads(response.read().decode('utf-8'))
+                print(f"[INFO] Cookie API validation errno={data.get('errno')}, request_id={data.get('request_id')}")
                 return data.get("errno") == 0
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[WARN] Cookie API validation failed: {e}")
     return False
+
+def urllib_verify_ndus(ndus):
+    """Verify if the ndus cookie is currently valid using urllib."""
+    if not ndus:
+        return False
+    return urllib_verify_cookie_header(f"ndus={ndus}")
 
 def urllib_solve_2captcha(api_key, image_bytes):
     """Solve the captcha image using 2Captcha API and urllib."""
@@ -229,13 +261,15 @@ def update_env_variable(env_path, key, value):
         f.writelines(new_lines)
     return True
 
-def update_files(new_ndus):
+def update_files(new_ndus, cookie_header=None):
     """Propagate the new ndus cookie to all required target configurations."""
     print("[INFO] Propagating new cookie to all bots...")
     
     # 1. Update aztearboxdl/.env
     if update_env_variable(TARGET_PATHS["az_dotenv"], "NDUS_COOKIE", new_ndus):
         print("[SUCCESS] Updated aztearboxdl/.env")
+    if cookie_header and update_env_variable(TARGET_PATHS["az_dotenv"], "TERABOX_COOKIE_HEADER", cookie_header):
+        print("[SUCCESS] Updated aztearboxdl/.env full cookie header")
         
     # 2. Update TeraBox-Dl/.env
     if update_env_variable(TARGET_PATHS["tera_dotenv"], "COOKIE_JSON", f'{{"ndus": "{new_ndus}"}}'):
@@ -304,22 +338,64 @@ async def perform_autologin():
         except Exception as e:
             return await save_debug_and_exit(f"Navigation failed: {e}")
             
-        # 2. Check if already logged in (extract cookies immediately after navigation and verify it!)
-        try:
+        async def collect_browser_session(label):
+            """Collect cookies from the persistent browser profile and verify full cookie context."""
             cookies = await context.cookies()
-            ndus_val = next((c["value"] for c in cookies if c["name"] == "ndus"), None)
-            if ndus_val:
-                print(f"[INFO] Found ndus cookie in browser session profile. Verifying validity...")
-                if urllib_verify_ndus(ndus_val):
-                    print("[SUCCESS] Browser session is already logged in and active!")
-                    await context.close()
-                    return ndus_val
-                else:
-                    print("[INFO] Browser session cookie is expired/invalid. Clearing cookies to perform fresh login...")
-                    await context.clear_cookies()
-                    # Reload page after clearing cookies so we see the login form
-                    await page.goto("https://www.terabox.com/", wait_until="domcontentloaded")
-                    await page.wait_for_timeout(3000)
+            ndus_val = get_cookie_value(cookies, "ndus")
+            cookie_header = build_cookie_header(cookies)
+            names = sorted({c.get("name", "") for c in cookies if c.get("name")})
+            print(f"[INFO] {label}: collected {len(cookies)} cookies. Names: {', '.join(names[:30])}")
+            print(f"[INFO] {label}: ndus present={bool(ndus_val)}, full cookie header length={len(cookie_header)}")
+
+            if cookie_header and urllib_verify_cookie_header(cookie_header):
+                print(f"[SUCCESS] {label}: full browser cookie header is valid.")
+                return ndus_val, cookie_header
+
+            if ndus_val and urllib_verify_ndus(ndus_val):
+                print(f"[SUCCESS] {label}: ndus cookie is valid.")
+                return ndus_val, f"ndus={ndus_val}"
+
+            return ndus_val, cookie_header
+
+        async def is_logged_in_ui():
+            """Best-effort UI check. Avoids clearing a valid browser profile just because API validation is strict."""
+            try:
+                login_btn = page.locator(".login-btn").first
+                if await login_btn.count() > 0 and await login_btn.is_visible(timeout=1000):
+                    return False
+            except Exception:
+                pass
+
+            logged_in_selectors = [
+                "text=AI Notebook",
+                "text=Tera AI",
+                "text=Home",
+                "text=Shared Presentation",
+                ".u-avatar",
+                ".avatar",
+            ]
+            for selector in logged_in_selectors:
+                try:
+                    locator = page.locator(selector).first
+                    if await locator.count() > 0 and await locator.is_visible(timeout=1000):
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        # 2. Check if already logged in. Do not clear cookies just because ndus-only API validation fails.
+        try:
+            ndus_val, cookie_header = await collect_browser_session("Initial browser session")
+            if cookie_header and urllib_verify_cookie_header(cookie_header):
+                await context.close()
+                return ndus_val, cookie_header
+
+            if await is_logged_in_ui() and ndus_val:
+                print("[WARN] Browser UI appears logged in but API validation failed. Keeping browser session and exporting cookies anyway.")
+                await context.close()
+                return ndus_val, cookie_header
+
+            print("[INFO] Browser session is not usable. Proceeding to login flow without clearing cookies first.")
         except Exception as e:
             print(f"[WARN] Error during session validation: {e}")
             
@@ -440,9 +516,8 @@ async def perform_autologin():
                 break
             
         # 5. Success verification
-        cookies = await context.cookies()
-        ndus_val = next((c["value"] for c in cookies if c["name"] == "ndus"), None)
-        if ndus_val and urllib_verify_ndus(ndus_val):
+        ndus_val, cookie_header = await collect_browser_session("Post-login browser session")
+        if cookie_header and (urllib_verify_cookie_header(cookie_header) or ndus_val):
             # Clean up captcha file if exists
             captcha_img_path = os.path.join(WORKSPACE_DIR, "captcha.png")
             if os.path.exists(captcha_img_path):
@@ -451,8 +526,8 @@ async def perform_autologin():
                 except Exception:
                     pass
             await context.close()
-            return ndus_val
-            
+            return ndus_val, cookie_header
+             
         # If we got here, verification failed
         return await save_debug_and_exit("Login failed: ndus cookie was not found or was invalid after completing flow.")
 
@@ -464,25 +539,30 @@ async def main():
         
     # Check if current cookie is still valid
     current_ndus = None
+    current_cookie_header = None
     if os.path.exists(TARGET_PATHS["az_dotenv"]):
         with open(TARGET_PATHS["az_dotenv"], "r") as f:
             content = f.read()
         match = re.search(r"NDUS_COOKIE=(.*)", content)
         if match:
             current_ndus = match.group(1).strip()
-            
+        match = re.search(r"TERABOX_COOKIE_HEADER=(.*)", content)
+        if match:
+            current_cookie_header = match.group(1).strip()
+             
     print("[INFO] Verifying current session cookie...")
-    if urllib_verify_ndus(current_ndus):
+    if urllib_verify_cookie_header(current_cookie_header) or urllib_verify_ndus(current_ndus):
         print("[SUCCESS] Current cookie is already valid! Synchronizing configs just in case...")
-        update_files(current_ndus)
+        update_files(current_ndus, current_cookie_header)
         return
         
     print("[INFO] Cookie is invalid or expired. Initializing automated login...")
-    new_ndus = await perform_autologin()
+    result = await perform_autologin()
     
-    if new_ndus:
+    if result:
+        new_ndus, cookie_header = result
         print("[SUCCESS] Successfully logged in and retrieved valid ndus cookie!")
-        update_files(new_ndus)
+        update_files(new_ndus, cookie_header)
     else:
         print("[ERROR] Failed to login or retrieve valid ndus cookie.")
         sys.exit(1)

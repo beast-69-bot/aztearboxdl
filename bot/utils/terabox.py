@@ -11,6 +11,14 @@ import config
 from bot.utils.progress import progress_callback
 
 
+def _auth_cookie_header() -> str:
+    if config.TERABOX_COOKIE_HEADER:
+        return config.TERABOX_COOKIE_HEADER
+    if config.NDUS_COOKIE:
+        return f"ndus={config.NDUS_COOKIE}"
+    return ""
+
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -141,7 +149,11 @@ def check_ndus_cookie() -> bool:
         api_url = "https://www.terabox.app/api/list?dir=%2F&num=10&page=1"
 
         try:
-            resp = session.get(api_url, headers=HEADERS, timeout=6)
+            headers = dict(HEADERS)
+            cookie_header = _auth_cookie_header()
+            if cookie_header:
+                headers["Cookie"] = cookie_header
+            resp = session.get(api_url, headers=headers, timeout=6)
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get("errno") == 0:
@@ -180,20 +192,24 @@ def get_terabox_info(surl: str) -> dict | None:
     print("Attempting direct connection from VPS IP...")
     session = curl_requests.Session(impersonate="chrome110")
     session.cookies.update({"ndus": config.NDUS_COOKIE})
+    cookie_header = _auth_cookie_header()
 
     first_origin = "https://dm.1024tera.com"
     first_url = f"{first_origin}/sharing/link?surl={short}"
     page_origin = first_origin
 
     try:
-        response = session.get(first_url, headers=HEADERS, timeout=12, allow_redirects=False)
+        page_headers = dict(HEADERS)
+        if cookie_header:
+            page_headers["Cookie"] = cookie_header
+        response = session.get(first_url, headers=page_headers, timeout=12, allow_redirects=False)
 
         if response.status_code in [301, 302]:
             redirect_target = response.headers.get("Location", "")
             print(f"Direct connection got redirect: {response.status_code} -> {redirect_target}")
             if "verify" not in redirect_target.lower():
                 page_origin = _origin_from_url(redirect_target, page_origin)
-                response = session.get(redirect_target, headers=HEADERS, timeout=12, allow_redirects=False)
+                response = session.get(redirect_target, headers=page_headers, timeout=12, allow_redirects=False)
 
         blocked = (
             "verify" in getattr(response, "url", "").lower()
@@ -252,7 +268,7 @@ async def download_file(
     if origin:
         headers["Origin"] = origin
     if config.NDUS_COOKIE:
-        headers["Cookie"] = f"ndus={config.NDUS_COOKIE}"
+        headers["Cookie"] = _auth_cookie_header()
 
     print(f"Connecting to download link: {dlink} ...")
     req = await asyncio.to_thread(
