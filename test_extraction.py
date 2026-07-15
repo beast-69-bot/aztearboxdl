@@ -41,8 +41,8 @@ def test_extract():
         cookie_header = f"ndus={NDUS_COOKIE}"
         print("Falling back to ndus environment variable")
         
+    # Let curl_cffi handle User-Agent matching the TLS fingerprint
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
@@ -51,8 +51,7 @@ def test_extract():
     }
 
     domains = [
-        "https://dm.terabox.app",
-        "https://www.terabox.app",
+        "https://dm.1024tera.com",
         "https://dm.terabox.com"
     ]
 
@@ -60,14 +59,29 @@ def test_extract():
         print("\n" + "="*50)
         url = f"{domain}/sharing/link?surl={surl}"
         
-        # Test 1: With allow_redirects=True
-        print(f"Testing (allow_redirects=True): {url}")
+        # Test 1: Chrome 110 impersonate
+        print(f"Testing Chrome 110 Impersonation on: {url}")
         session = curl_requests.Session(impersonate="chrome110")
         if STATIC_PROXY:
             session.proxies = format_curl_proxy(STATIC_PROXY)
         try:
             resp = session.get(url, headers=headers, timeout=8, allow_redirects=True)
-            print(f"Final URL: {resp.url}")
+            print(f"User-Agent sent: {resp.request.headers.get('User-Agent')}")
+            print(f"Status: {resp.status_code}")
+            print("Response Text (first 500 chars):")
+            print(resp.text[:500])
+        except Exception as e:
+            print(f"Request failed: {e}")
+            
+        # Test 2: Chrome 120 impersonate
+        print("-"*50)
+        print(f"Testing Chrome 120 Impersonation on: {url}")
+        session = curl_requests.Session(impersonate="chrome120")
+        if STATIC_PROXY:
+            session.proxies = format_curl_proxy(STATIC_PROXY)
+        try:
+            resp = session.get(url, headers=headers, timeout=8, allow_redirects=True)
+            print(f"User-Agent sent: {resp.request.headers.get('User-Agent')}")
             print(f"Status: {resp.status_code}")
             print("Response Text (first 500 chars):")
             print(resp.text[:500])
