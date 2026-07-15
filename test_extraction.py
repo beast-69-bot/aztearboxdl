@@ -1,5 +1,6 @@
 import os
 import re
+import json
 from dotenv import load_dotenv
 import curl_cffi.requests as curl_requests
 
@@ -25,9 +26,9 @@ def format_curl_proxy(proxy_str: str) -> dict:
     return {"http": formatted, "https": formatted}
 
 
-def make_session():
+def make_session(with_proxy=True):
     session = curl_requests.Session(impersonate="chrome110")
-    if STATIC_PROXY:
+    if with_proxy and STATIC_PROXY:
         session.proxies = format_curl_proxy(STATIC_PROXY)
     return session
 
@@ -36,123 +37,9 @@ def test_extract():
     surl = "6j9ZbdrBAAL6qvL70yPO2A"
     domain = "https://dm.1024tera.com"
 
-    print(f"Testing surl: {surl}")
-    print(f"Domain: {domain}")
-    if STATIC_PROXY:
-        print(f"Proxy: {STATIC_PROXY[:30]}...")
+    print(f"surl: {surl} | domain: {domain}")
 
-    # ── STEP 1: Anonymous HTML request ────────────────────────────────────
-    print("\n" + "="*60)
-    print("STEP 1: Fetch HTML page (NO cookie, anonymous)")
-    print("="*60)
-
-    html_headers = {
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Upgrade-Insecure-Requests": "1",
-    }
-
-    html = None
-    session = make_session()
-    url = f"{domain}/sharing/link?surl={surl}"
-    try:
-        resp = session.get(url, headers=html_headers, timeout=15, allow_redirects=True)
-        print(f"Status: {resp.status_code}")
-        html = resp.text
-        print(f"HTML length: {len(html)} chars")
-        print(f"First 300 chars:\n{html[:300]}")
-    except Exception as e:
-        print(f"ERROR: {e}")
-        return
-
-    if not html or len(html) < 100:
-        print("ERROR: Got no HTML. Aborting.")
-        return
-
-    # ── STEP 2: Extract jsToken from HTML ─────────────────────────────────
-    print("\n" + "="*60)
-    print("STEP 2: Extract jsToken from HTML")
-    print("="*60)
-
-    js_token = None
-    patterns = [
-        r'jsToken\s*=\s*["\']([^"\']+)["\']',
-        r'"jsToken"\s*:\s*"([^"]+)"',
-        r'fn%28%22([^%]+)%22%29',
-        r'encodeURIComponent\("([^"]+)"\)',
-    ]
-    for pat in patterns:
-        m = re.search(pat, html)
-        if m:
-            js_token = m.group(1)
-            print(f"Found jsToken via pattern [{pat[:40]}...]:")
-            print(f"  jsToken = {js_token[:60]}...")
-            break
-
-    if not js_token:
-        print("WARNING: jsToken NOT found in HTML!")
-        # Print relevant sections for debugging
-        for keyword in ["jsToken", "token", "js_token", "__NEXT_DATA__", "initialState"]:
-            idx = html.lower().find(keyword.lower())
-            if idx >= 0:
-                print(f"\n  Found '{keyword}' at pos {idx}:")
-                print(f"  ...{html[max(0,idx-30):idx+100]}...")
-                break
-    else:
-        print(f"OK! jsToken extracted.")
-
-    # ── STEP 3: Extract shorturl from HTML ────────────────────────────────
-    print("\n" + "="*60)
-    print("STEP 3: Extract shorturl from HTML")
-    print("="*60)
-
-    shorturl = None
-    short_patterns = [
-        r'"shorturl"\s*:\s*"([^"]+)"',
-        r'shorturl["\s]*[:=]["\s]*["\']([^"\']+)["\']',
-        r'share_id["\s]*[:=]["\s]*["\']([^"\']+)["\']',
-    ]
-    for pat in short_patterns:
-        m = re.search(pat, html)
-        if m:
-            shorturl = m.group(1)
-            print(f"Found shorturl: {shorturl}")
-            break
-
-    if not shorturl:
-        shorturl = surl  # fallback to the original surl
-        print(f"WARNING: shorturl not found, using surl as fallback: {shorturl}")
-
-    # ── STEP 4: Try /share/list WITHOUT cookie ────────────────────────────
-    print("\n" + "="*60)
-    print("STEP 4: /share/list WITHOUT cookie (anonymous)")
-    print("="*60)
-
-    api_headers_anon = {
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer": f"{domain}/sharing/link?surl={surl}",
-    }
-
-    share_list_url = f"{domain}/share/list?app_id=250528&root=1&shorturl={shorturl}"
-    if js_token:
-        share_list_url += f"&jsToken={js_token}"
-
-    session2 = make_session()
-    try:
-        resp2 = session2.get(share_list_url, headers=api_headers_anon, timeout=12)
-        print(f"Status: {resp2.status_code}")
-        print(f"Response: {resp2.text[:600]}")
-    except Exception as e:
-        print(f"ERROR: {e}")
-
-    # ── STEP 5: Try /share/list WITH cookie ──────────────────────────────
-    print("\n" + "="*60)
-    print("STEP 5: /share/list WITH cookie (authenticated)")
-    print("="*60)
-
+    # Load cookie
     cookie_header = ""
     for path in ["terabox_cookie_header.txt", "../terabox_cookie_header.txt"]:
         if os.path.exists(path):
@@ -162,42 +49,110 @@ def test_extract():
     if not cookie_header and NDUS_COOKIE:
         cookie_header = f"ndus={NDUS_COOKIE}"
 
-    api_headers_auth = {**api_headers_anon, "Cookie": cookie_header}
-    session3 = make_session()
-    try:
-        resp3 = session3.get(share_list_url, headers=api_headers_auth, timeout=12)
-        print(f"Status: {resp3.status_code}")
-        print(f"Response: {resp3.text[:600]}")
-    except Exception as e:
-        print(f"ERROR: {e}")
-
-    # ── STEP 6: Extract dlink directly from HTML ──────────────────────────
+    # ── STEP 1: Anonymous HTML → jsToken ─────────────────────────────────
     print("\n" + "="*60)
-    print("STEP 6: Look for dlink / download URL directly in HTML")
+    print("STEP 1: Fetch HTML anonymously → extract jsToken")
     print("="*60)
 
-    dlink_patterns = [
-        r'"dlink"\s*:\s*"([^"]+)"',
-        r'"uk"\s*:\s*(\d+)',
-        r'"fs_id"\s*:\s*(\d+)',
-        r'"server_filename"\s*:\s*"([^"]+)"',
-        r'"size"\s*:\s*(\d+)',
-    ]
-    found_any = False
-    for pat in dlink_patterns:
+    html_headers = {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    resp = make_session().get(
+        f"{domain}/sharing/link?surl={surl}",
+        headers=html_headers, timeout=15, allow_redirects=True
+    )
+    html = resp.text
+    print(f"HTML Status: {resp.status_code}, Length: {len(html)}")
+
+    js_token = None
+    for pat in [r'fn%28%22([^%]+)%22%29', r'jsToken\s*=\s*["\']([^"\']+)["\']', r'"jsToken"\s*:\s*"([^"]+)"']:
         m = re.search(pat, html)
         if m:
-            print(f"  [{pat[:35]}] => {m.group(1)[:80]}")
-            found_any = True
+            js_token = m.group(1)
+            print(f"jsToken: {js_token[:50]}...")
+            break
 
-    if not found_any:
-        print("  No dlink/file metadata found directly in HTML.")
-        print("  (File info is likely loaded via XHR after page load)")
+    if not js_token:
+        print("ERROR: jsToken not found!")
+        return
 
-        # Print any JSON-like structure we find
-        json_blocks = re.findall(r'window\.__[A-Z_]+__\s*=\s*(\{.{0,200})', html)
-        for i, block in enumerate(json_blocks[:3]):
-            print(f"\n  window.__VAR__[{i}]: {block[:150]}")
+    # ── STEP 2: Anonymous /share/list → FULL RESPONSE ────────────────────
+    print("\n" + "="*60)
+    print("STEP 2: Anonymous /share/list → FULL response")
+    print("="*60)
+
+    api_headers = {
+        "Accept": "application/json, text/plain, */*",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": f"{domain}/sharing/link?surl={surl}",
+    }
+    share_url = f"{domain}/share/list?app_id=250528&root=1&shorturl={surl}&jsToken={js_token}"
+
+    resp2 = make_session().get(share_url, headers=api_headers, timeout=12)
+    print(f"Status: {resp2.status_code}")
+
+    try:
+        data = resp2.json()
+        print(f"errno: {data.get('errno')}")
+        print(f"title: {data.get('title')}")
+        files = data.get("list", [])
+        print(f"Files found: {len(files)}")
+
+        for i, f in enumerate(files[:3]):
+            print(f"\n  File [{i}]:")
+            print(f"    name:   {f.get('server_filename')}")
+            print(f"    size:   {int(f.get('size', 0)) / 1024 / 1024:.1f} MB")
+            print(f"    fs_id:  {f.get('fs_id')}")
+            print(f"    dlink:  {f.get('dlink', 'NOT FOUND')}")
+            print(f"    path:   {f.get('path')}")
+
+        # also print any top-level keys we haven't seen
+        print(f"\n  Top-level keys: {list(data.keys())}")
+        print(f"\n  Full first file entry:\n{json.dumps(files[0], indent=2)}" if files else "")
+
+    except Exception as e:
+        print(f"JSON parse error: {e}")
+        print(resp2.text[:1000])
+
+    # ── STEP 3: Get dlink via /share/download with cookie ─────────────────
+    print("\n" + "="*60)
+    print("STEP 3: Try /share/download API with cookie to get premium dlink")
+    print("="*60)
+
+    if files and files[0].get("fs_id"):
+        fs_id = files[0]["fs_id"]
+        # Try the fileinfo/download endpoint with cookie
+        dl_headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Referer": f"{domain}/sharing/link?surl={surl}",
+            "Cookie": cookie_header,
+        }
+        dl_url = (
+            f"{domain}/api/shorturlinfo"
+            f"?app_id=250528"
+            f"&shorturl={surl}"
+            f"&jsToken={js_token}"
+        )
+        resp3 = make_session().get(dl_url, headers=dl_headers, timeout=12)
+        print(f"shorturlinfo Status: {resp3.status_code}")
+        print(f"Response: {resp3.text[:400]}")
+
+        # Also try filemetas endpoint
+        print("\n--- Trying /api/filemetas ---")
+        meta_url = (
+            f"{domain}/api/filemetas"
+            f"?app_id=250528"
+            f"&target=%5B%22{files[0].get('path', '').replace('/', '%2F')}%22%5D"
+            f"&dlink=1"
+            f"&jsToken={js_token}"
+        )
+        resp4 = make_session().get(meta_url, headers=dl_headers, timeout=12)
+        print(f"filemetas Status: {resp4.status_code}")
+        print(f"Response: {resp4.text[:600]}")
+    else:
+        print("No fs_id available to test download endpoint.")
 
 
 if __name__ == "__main__":
