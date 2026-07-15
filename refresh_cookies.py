@@ -575,9 +575,25 @@ async def perform_autologin():
                         
                         await captcha_input.first.fill(code)
                         await page.wait_for_timeout(500)
-                        await page.locator("text=Confirm").first.click()
-                        print("[INFO] Captcha submitted. Processing...")
-                        await page.wait_for_timeout(5000)
+                        
+                        # Click the Confirm button (precise selector)
+                        confirm_btn = page.locator("button:has-text('Confirm'), input[type='submit'], .confirm-btn, [class*='confirm']").first
+                        await confirm_btn.click()
+                        
+                        print("[INFO] Captcha submitted. Waiting for session initialization...")
+                        
+                        # Poll for up to 12 seconds for the ndus cookie to appear
+                        cookie_found = False
+                        for _ in range(24):
+                            await page.wait_for_timeout(500)
+                            cookies = await context.cookies()
+                            if any(c["name"] == "ndus" for c in cookies):
+                                cookie_found = True
+                                break
+                                
+                        if cookie_found:
+                            print("[INFO] New ndus cookie successfully detected in browser context.")
+                            break
                     except Exception as e:
                         print(f"[ERROR] Failed to submit captcha: {e}")
             else:
