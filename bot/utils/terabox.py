@@ -124,7 +124,7 @@ def check_ndus_cookie() -> bool:
         session.cookies.update({"ndus": config.NDUS_COOKIE})
         
         try:
-            api_url = "https://dm.1024tera.com/api/box/space"
+            api_url = "https://www.terabox.app/api/list?dir=%2F&num=10&page=1"
             resp = session.get(api_url, headers=HEADERS, timeout=8)
             if resp.status_code == 200:
                 data = resp.json()
@@ -132,19 +132,7 @@ def check_ndus_cookie() -> bool:
                     return True
         except Exception:
             pass
-            
-        try:
-            test_url = "https://dm.1024tera.com/sharing/link?surl=tKDPsB5RNnjdWLwoLcCFyg"
-            resp = session.get(test_url, headers=HEADERS, timeout=8, allow_redirects=False)
-            if resp.status_code in [301, 302]:
-                redirect_target = resp.headers.get("Location", "").lower()
-                if "verify" in redirect_target or "login" in redirect_target:
-                    return False
-            if "need verify" in resp.text.lower() or '"errno":400141' in resp.text:
-                return False
-            return True
-        except Exception:
-            return False
+        return False
 
     if _is_valid():
         print("✅ NDUS_COOKIE is VALID.")
