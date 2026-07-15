@@ -117,6 +117,7 @@ def check_ndus_cookie() -> bool:
     If not, runs refresh_cookies.py and retries.
     """
     def _is_valid():
+        global vps_cached_proxies
         if not config.NDUS_COOKIE:
             return False
             
@@ -136,9 +137,12 @@ def check_ndus_cookie() -> bool:
             
         # 2. Try using a proxy if direct connection was blocked/failed
         try:
-            proxy = get_proxy_dict()
-            if proxy:
-                print("[INFO] Direct cookie check blocked. Retrying validation using proxy...")
+            if not vps_cached_proxies:
+                vps_cached_proxies = fetch_fresh_proxies()
+            if vps_cached_proxies:
+                selected_proxy = random.choice(vps_cached_proxies)
+                proxy = get_proxy_dict(selected_proxy)
+                print(f"[INFO] Direct cookie check blocked. Retrying validation using proxy: {selected_proxy}")
                 resp = session.get(api_url, headers=HEADERS, proxies=proxy, timeout=8)
                 if resp.status_code == 200:
                     data = resp.json()
