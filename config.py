@@ -11,10 +11,13 @@ TERABOX_COOKIE_HEADER = os.getenv("TERABOX_COOKIE_HEADER")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 STATIC_PROXY = os.getenv("STATIC_PROXY")
 
+# MongoDB shared database configuration for FapHouse subscription check
+MONGO_DB = os.getenv("MONGO_DB", "mongodb+srv://master00:anshu1234@tg-master.pkmshln.mongodb.net/?appName=TG-MASTER")
+DB_NAME = os.getenv("DB_NAME", "telegram_downloader")
+
 def reload_ndus():
     global NDUS_COOKIE, TERABOX_COOKIE_HEADER, STATIC_PROXY
     load_dotenv(override=True)
     NDUS_COOKIE = os.getenv("NDUS_COOKIE")
     TERABOX_COOKIE_HEADER = os.getenv("TERABOX_COOKIE_HEADER")
     STATIC_PROXY = os.getenv("STATIC_PROXY")
-
