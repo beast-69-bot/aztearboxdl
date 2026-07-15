@@ -61,6 +61,7 @@ USER_PASS = os.getenv("TERABOX_PASSWORD")
 TWO_CAPTCHA_API_KEY = os.getenv("TWO_CAPTCHA_API_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID")
+STATIC_PROXY = os.getenv("STATIC_PROXY")
 
 # Find the AZ NETWORK TG BOTS directory dynamically (handles different casing/separators)
 def find_bots_dir(parent):
@@ -136,6 +137,37 @@ def telegram_send_photo(photo_path, caption):
     except Exception as e:
         print(f"[TELEGRAM ERROR] Failed to send photo: {e}")
     return False
+
+def parse_playwright_proxy(proxy_str):
+    if not proxy_str:
+        return None
+    proxy_str = proxy_str.strip()
+    
+    # 1. Check for format ip:port:username:password
+    parts = proxy_str.split(":")
+    if len(parts) == 4:
+        ip, port, user, pwd = parts
+        return {
+            "server": f"http://{ip}:{port}",
+            "username": user,
+            "password": pwd
+        }
+        
+    # 2. Check for format http://user:pass@ip:port
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(proxy_str)
+        if not parsed.scheme:
+            parsed = urlparse("http://" + proxy_str)
+        server = f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
+        res = {"server": server}
+        if parsed.username:
+            res["username"] = parsed.username
+        if parsed.password:
+            res["password"] = parsed.password
+        return res
+    except Exception:
+        return None
 
 def build_cookie_header(cookies):
     """Build a Cookie header from Playwright cookies for TeraBox domains."""
@@ -305,13 +337,20 @@ async def perform_autologin():
     async with async_playwright() as p:
         user_data_dir = os.path.join(WORKSPACE_DIR, ".terabox_session")
         
+        # Parse static proxy if defined in .env
+        proxy_opts = parse_playwright_proxy(STATIC_PROXY)
+        
         context_args = {
             "user_data_dir": user_data_dir,
             "headless": args.headless,
             "viewport": {"width": 1280, "height": 800},
             "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         }
-        print(f"[INFO] Launching Chromium (headless={args.headless}) using profile {user_data_dir}...")
+        if proxy_opts:
+            context_args["proxy"] = proxy_opts
+            print(f"[INFO] Launching Chromium (headless={args.headless}) using profile {user_data_dir} via STATIC_PROXY: {proxy_opts['server']}...")
+        else:
+            print(f"[INFO] Launching Chromium (headless={args.headless}) using profile {user_data_dir}...")
             
         context = await p.chromium.launch_persistent_context(**context_args)
         
@@ -545,6 +584,22 @@ async def main():
     if not USER_EMAIL or not USER_PASS:
         print("[ERROR] Credentials not found in .env. Please set TERABOX_EMAIL and TERABOX_PASSWORD.")
         sys.exit(1)
+        
+    # Configure global proxy for urllib calls if STATIC_PROXY is set
+    if STATIC_PROXY:
+        try:
+            proxy_opts = parse_playwright_proxy(STATIC_PROXY)
+            if proxy_opts:
+                proxy_url = proxy_opts['server']
+                if "username" in proxy_opts:
+                    server_clean = proxy_url.replace("http://", "").replace("https://", "")
+                    proxy_url = f"http://{proxy_opts['username']}:{proxy_opts['password']}@{server_clean}"
+                proxy_support = urllib.request.ProxyHandler({'http': proxy_url, 'https': proxy_url})
+                opener = urllib.request.build_opener(proxy_support)
+                urllib.request.install_opener(opener)
+                print(f"[INFO] Configured global proxy for urllib verification calls via STATIC_PROXY: {proxy_opts['server']}")
+        except Exception as e:
+            print(f"[WARN] Failed to configure global proxy for urllib: {e}")
         
     # Check if current cookie is still valid
     current_ndus = None

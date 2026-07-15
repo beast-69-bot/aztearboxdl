@@ -38,6 +38,27 @@ def _origin_from_url(url: str, fallback: str) -> str:
     return fallback
 
 
+def format_curl_proxy(proxy_str: str) -> dict:
+    if not proxy_str:
+        return {}
+    proxy_str = proxy_str.strip()
+    # Handle Proxy Cheap format (ip:port:username:password)
+    parts = proxy_str.split(":")
+    if len(parts) == 4:
+        ip, port, user, pwd = parts
+        formatted = f"http://{user}:{pwd}@{ip}:{port}"
+    else:
+        if not proxy_str.startswith("http://") and not proxy_str.startswith("https://"):
+            formatted = f"http://{proxy_str}"
+        else:
+            formatted = proxy_str
+            
+    return {
+        "http": formatted,
+        "https": formatted
+    }
+
+
 def _share_list_request(session, origin: str, short: str, js_token: str, timeout: int):
     parsed = urlparse(origin)
     host = parsed.netloc
@@ -145,6 +166,10 @@ def check_ndus_cookie() -> bool:
             return False
 
         session = curl_requests.Session(impersonate="chrome110")
+        if config.STATIC_PROXY:
+            session.proxies = format_curl_proxy(config.STATIC_PROXY)
+            print("[INFO] Verifying cookie using configured STATIC_PROXY...")
+            
         session.cookies.update({"ndus": config.NDUS_COOKIE})
         api_url = "https://www.terabox.app/api/list?dir=%2F&num=10&page=1"
 
@@ -158,8 +183,9 @@ def check_ndus_cookie() -> bool:
                 data = resp.json()
                 if data.get("errno") == 0:
                     return True
-        except Exception:
-            pass
+        except Exception as e:
+            if config.STATIC_PROXY:
+                print(f"[WARN] Static proxy verification failed: {e}")
 
         return False
 
@@ -183,21 +209,8 @@ def check_ndus_cookie() -> bool:
     return False
 
 
-def get_terabox_info(surl: str) -> dict | None:
-    """
-    Fetches file metadata from TeraBox using direct VPS connection only.
-    """
-    short = surl[1:] if surl.startswith("1") else surl
-
-    print("Attempting direct connection from VPS IP...")
-    session = curl_requests.Session(impersonate="chrome110")
-    session.cookies.update({"ndus": config.NDUS_COOKIE})
-    cookie_header = _auth_cookie_header()
-
-    first_origin = "https://dm.1024tera.com"
-    first_url = f"{first_origin}/sharing/link?surl={short}"
+def _extract_info_via_session(session, first_url: str, short: str, first_origin: str, cookie_header: str) -> dict | None:
     page_origin = first_origin
-
     try:
         page_headers = dict(HEADERS)
         if cookie_header:
@@ -206,7 +219,7 @@ def get_terabox_info(surl: str) -> dict | None:
 
         if response.status_code in [301, 302]:
             redirect_target = response.headers.get("Location", "")
-            print(f"Direct connection got redirect: {response.status_code} -> {redirect_target}")
+            print(f"Connection got redirect: {response.status_code} -> {redirect_target}")
             if "verify" not in redirect_target.lower():
                 page_origin = _origin_from_url(redirect_target, page_origin)
                 response = session.get(redirect_target, headers=page_headers, timeout=12, allow_redirects=False)
@@ -218,28 +231,56 @@ def get_terabox_info(surl: str) -> dict | None:
             or '"errno":400141' in response.text
         )
         if blocked:
-            print(f"Direct connection hit verification/login wall. Final URL: {response.url}, Status Code: {response.status_code}")
+            print(f"Connection hit verification/login wall. Final URL: {getattr(response, 'url', '')}, Status Code: {response.status_code}")
             return None
 
         match = re.search(r'fn%28%22(.*?)%22%29', response.text)
         if not match:
-            print("Direct connection did not return jsToken.")
+            print("Connection did not return jsToken.")
             return None
 
         js_token = match.group(1)
-        print("Direct VPS page token extraction successful.")
+        print("Page token extraction successful.")
 
         api_response = _share_list_request(session, page_origin, short, js_token, timeout=12)
         item = _item_from_share_list_response(api_response)
         if item:
             item["referer"] = f"{page_origin}/sharing/link?surl={short}&clearCache=1"
             item["origin"] = page_origin
-            print("Direct VPS IP extraction successful.")
+            print("Extraction successful.")
             return item
     except Exception as e:
-        print(f"Direct VPS IP extraction failed due to error: {e}.")
-
+        print(f"Extraction attempt failed: {e}")
     return None
+
+
+def get_terabox_info(surl: str) -> dict | None:
+    """
+    Fetches file metadata from TeraBox using static proxy, falling back to direct VPS connection.
+    """
+    short = surl[1:] if surl.startswith("1") else surl
+
+    session = curl_requests.Session(impersonate="chrome110")
+    session.cookies.update({"ndus": config.NDUS_COOKIE})
+    cookie_header = _auth_cookie_header()
+
+    first_origin = "https://dm.1024tera.com"
+    first_url = f"{first_origin}/sharing/link?surl={short}"
+
+    # Try static proxy first if set
+    if config.STATIC_PROXY:
+        print("Attempting extraction via configured STATIC_PROXY...")
+        session.proxies = format_curl_proxy(config.STATIC_PROXY)
+        res = _extract_info_via_session(session, first_url, short, first_origin, cookie_header)
+        if res:
+            return res
+        print("STATIC_PROXY extraction was blocked or failed. Falling back to direct VPS IP...")
+
+    # Fallback to direct VPS connection
+    print("Attempting direct connection from VPS IP...")
+    session = curl_requests.Session(impersonate="chrome110")
+    session.cookies.update({"ndus": config.NDUS_COOKIE})
+    return _extract_info_via_session(session, first_url, short, first_origin, cookie_header)
 
 
 async def download_file(
