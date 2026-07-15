@@ -271,57 +271,62 @@ async def perform_autologin():
             return None
             
         # 3. Handle CAPTCHA / verification puzzle
-        captcha_input = page.locator("input[placeholder*='verification code']")
-        if await captcha_input.count() > 0 or "verification" in page.url.lower():
-            print("\n[WARNING] CAPTCHA / Verification challenge detected!")
-            
-            # Locate the canvas captcha image
-            canvas_locator = page.locator("#canvas").first
-            
-            # Check if 2Captcha API Key is set
-            if TWO_CAPTCHA_API_KEY:
-                print("[2CAPTCHA] Found API Key. Attempting automatic solving...")
+        attempt_limit = 3
+        for try_num in range(attempt_limit):
+            captcha_input = page.locator("input[placeholder*='verification code']")
+            if await captcha_input.count() > 0 or "verification" in page.url.lower():
+                print(f"\n[WARNING] CAPTCHA / Verification challenge detected! (Attempt {try_num+1}/{attempt_limit})")
+                
+                # Locate the canvas captcha image
+                canvas_locator = page.locator("#canvas").first
                 try:
                     await canvas_locator.wait_for(state="visible", timeout=5000)
-                    image_bytes = await canvas_locator.screenshot()
-                    code = urllib_solve_2captcha(TWO_CAPTCHA_API_KEY, image_bytes)
-                    
-                    if code:
-                        await captcha_input.first.fill(code)
-                        await page.wait_for_timeout(500)
-                        await page.locator("text=Confirm").first.click()
-                        print("[INFO] Captcha submitted. Processing...")
-                        await page.wait_for_timeout(5000)
-                except Exception as e:
-                    print(f"[2CAPTCHA ERROR] Automatic solve failed: {e}")
-            
-            # Fallback to Manual terminal input if 2Captcha failed or is missing
-            # Recheck if captcha is still there
-            if await captcha_input.count() > 0:
-                captcha_img_path = os.path.join(WORKSPACE_DIR, "captcha.png")
-                try:
-                    await canvas_locator.screenshot(path=captcha_img_path)
-                    print(f"[ACTION REQUIRED] Please open the image '{captcha_img_path}' to see the code.")
-                except Exception as e:
-                    print(f"[WARN] Could not screenshot canvas: {e}. Screenshotting full page instead.")
-                    await page.screenshot(path=captcha_img_path)
+                except Exception:
+                    pass
                 
-                if sys.stdin.isatty():
-                    code = input(">>> Enter the 4-letter CAPTCHA code shown in the image: ").strip()
+                code = None
+                # Check if 2Captcha API Key is set
+                if TWO_CAPTCHA_API_KEY:
+                    print("[2CAPTCHA] Found API Key. Attempting automatic solving...")
                     try:
+                        image_bytes = await canvas_locator.screenshot()
+                        code = urllib_solve_2captcha(TWO_CAPTCHA_API_KEY, image_bytes)
+                    except Exception as e:
+                        print(f"[2CAPTCHA ERROR] Automatic solve failed: {e}")
+                
+                # Fallback to Manual terminal input if 2Captcha failed or is missing
+                if not code:
+                    captcha_img_path = os.path.join(WORKSPACE_DIR, "captcha.png")
+                    try:
+                        await canvas_locator.screenshot(path=captcha_img_path)
+                        print(f"[ACTION REQUIRED] Please open the image '{captcha_img_path}' to see the code.")
+                    except Exception as e:
+                        print(f"[WARN] Could not screenshot canvas: {e}. Screenshotting full page instead.")
+                        await page.screenshot(path=captcha_img_path)
+                    
+                    if sys.stdin.isatty():
+                        code = input(">>> Enter the 4-letter CAPTCHA code shown in the image: ").strip()
+                    else:
+                        print("[ERROR] Non-interactive environment. Cannot solve captcha without terminal input.")
+                        await context.close()
+                        return None
+                
+                if code:
+                    try:
+                        # Clear field first
+                        await captcha_input.first.click()
+                        await page.keyboard.press("Control+A")
+                        await page.keyboard.press("Backspace")
+                        
                         await captcha_input.first.fill(code)
                         await page.wait_for_timeout(500)
                         await page.locator("text=Confirm").first.click()
                         print("[INFO] Captcha submitted. Processing...")
                         await page.wait_for_timeout(5000)
                     except Exception as e:
-                        print(f"[ERROR] Failed to submit captcha manually: {e}")
-                        await context.close()
-                        return None
-                else:
-                    print("[ERROR] Non-interactive environment. Cannot solve captcha without terminal input.")
-                    await context.close()
-                    return None
+                        print(f"[ERROR] Failed to submit captcha: {e}")
+            else:
+                break
             
         # 4. Success verification
         cookies = await context.cookies()
