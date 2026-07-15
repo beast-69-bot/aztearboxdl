@@ -52,32 +52,40 @@ def test_extract():
 
     domains = [
         "https://www.terabox.com",
-        "https://dm.1024tera.com",
-        "https://www.teraboxapp.com",
-        "https://dm.terabox.com",
-        "https://dm.teraboxapp.com"
+        "https://dm.terabox.com"
     ]
 
     for domain in domains:
         print("\n" + "="*50)
-        print(f"Testing Domain: {domain}")
         url = f"{domain}/sharing/link?surl={surl}"
         
+        # Test 1: With allow_redirects=True
+        print(f"Testing (allow_redirects=True): {url}")
         session = curl_requests.Session(impersonate="chrome110")
         if STATIC_PROXY:
             session.proxies = format_curl_proxy(STATIC_PROXY)
-            print(f"Using proxy: {STATIC_PROXY}")
-        else:
-            print("Using direct connection")
-            
         try:
-            resp = session.get(url, headers=headers, timeout=8, allow_redirects=False)
+            resp = session.get(url, headers=headers, timeout=8, allow_redirects=True)
+            print(f"Final URL: {resp.url}")
             print(f"Status: {resp.status_code}")
-            if resp.status_code in [301, 302]:
-                print(f"Redirect Location: {resp.headers.get('Location')}")
-            else:
-                print("Response Text (first 300 chars):")
-                print(resp.text[:300])
+            print("Response Text (first 500 chars):")
+            print(resp.text[:500])
+        except Exception as e:
+            print(f"Request failed: {e}")
+            
+        # Test 2: Manually requesting with clearCache=1
+        print("-"*50)
+        cache_url = f"{domain}/sharing/link?surl={surl}&clearCache=1"
+        print(f"Testing manual clearCache: {cache_url}")
+        session = curl_requests.Session(impersonate="chrome110")
+        if STATIC_PROXY:
+            session.proxies = format_curl_proxy(STATIC_PROXY)
+        try:
+            resp = session.get(cache_url, headers=headers, timeout=8, allow_redirects=True)
+            print(f"Final URL: {resp.url}")
+            print(f"Status: {resp.status_code}")
+            print("Response Text (first 500 chars):")
+            print(resp.text[:500])
         except Exception as e:
             print(f"Request failed: {e}")
 
