@@ -383,6 +383,16 @@ async def perform_autologin():
                     except Exception:
                         pass
                     
+                    # If error warning from previous attempt is active, click canvas to refresh captcha image
+                    try:
+                        has_error = await page.locator("#box #error.show, #box #error[class*='show'], #error.show, .show#error").count() > 0
+                        if has_error:
+                            print("[INFO] Previous captcha attempt failed. Refreshing captcha image...")
+                            await canvas_locator.click()
+                            await page.wait_for_timeout(2000)
+                    except Exception as e:
+                        print(f"[WARN] Failed to check/refresh captcha error state: {e}")
+                    
                     try:
                         container_html = await page.evaluate("""() => {
                             const canvas = document.querySelector('#box #canvas, #box canvas, #canvas');
