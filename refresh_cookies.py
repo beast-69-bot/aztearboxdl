@@ -359,13 +359,12 @@ async def perform_autologin():
 
         async def is_logged_in_ui():
             """Best-effort UI check. Avoids clearing a valid browser profile just because API validation is strict."""
-            try:
-                login_btn = page.locator(".login-btn").first
-                if await login_btn.count() > 0 and await login_btn.is_visible(timeout=1000):
-                    return False
-            except Exception:
-                pass
+            # 1. Check URL redirect
+            url = page.url.lower()
+            if any(path in url for path in ["/main", "/webmaster", "/disk"]):
+                return True
 
+            # 2. Check visual dashboard indicators
             logged_in_selectors = [
                 "text=AI Notebook",
                 "text=Tera AI",
@@ -373,11 +372,14 @@ async def perform_autologin():
                 "text=Shared Presentation",
                 ".u-avatar",
                 ".avatar",
+                ".personal-info",
+                "text=Sign Out",
+                "text=Log Out"
             ]
             for selector in logged_in_selectors:
                 try:
                     locator = page.locator(selector).first
-                    if await locator.count() > 0 and await locator.is_visible(timeout=1000):
+                    if await locator.count() > 0 and await locator.is_visible(timeout=200):
                         return True
                 except Exception:
                     continue
@@ -385,13 +387,20 @@ async def perform_autologin():
 
         # 2. Check if already logged in. Do not clear cookies just because ndus-only API validation fails.
         try:
-            ndus_val, cookie_header = await collect_browser_session("Initial browser session")
-            if cookie_header and urllib_verify_cookie_header(cookie_header):
-                await context.close()
-                return ndus_val, cookie_header
+            print("[INFO] Checking if session is already logged in...")
+            # Poll for up to 8 seconds for dashboard redirect or UI indicators to settle
+            is_logged_in = False
+            for _ in range(16):
+                if await is_logged_in_ui():
+                    is_logged_in = True
+                    break
+                await page.wait_for_timeout(500)
 
-            if await is_logged_in_ui() and ndus_val:
-                print("[WARN] Browser UI appears logged in but API validation failed. Keeping browser session and exporting cookies anyway.")
+            ndus_val, cookie_header = await collect_browser_session("Initial browser session")
+            
+            # If visual check OR API check says we are logged in, trust it!
+            if is_logged_in or (cookie_header and urllib_verify_cookie_header(cookie_header)):
+                print("[SUCCESS] Browser session is already logged in and active!")
                 await context.close()
                 return ndus_val, cookie_header
 
