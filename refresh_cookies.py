@@ -451,51 +451,65 @@ async def perform_autologin():
             await page.wait_for_timeout(3000)
         except Exception as e:
             print(f"[WARN] Error during session validation: {e}")
+                   # Check if verification page or captcha is already active on navigation
+        is_verification_active = False
+        captcha_input_init = page.locator("input[placeholder*='verification code']").first
+        if (await captcha_input_init.count() > 0) or "verification" in page.url.lower():
+            is_verification_active = True
             
-        # 3. Perform Login Flow (if not logged in)
-        try:
-            login_btn = page.locator(".login-btn").first
-            await login_btn.wait_for(state="visible", timeout=5000)
-            await login_btn.click()
-            await page.wait_for_timeout(2000)
-        except Exception:
-            pass
-            
-        print("[INFO] Opening Email login dialog...")
-        try:
-            email_logo = page.locator(".other-item .logo").nth(1)
-            await email_logo.wait_for(state="visible", timeout=5000)
-            await email_logo.click()
-            await page.wait_for_timeout(2000)
-        except Exception as e:
-            print(f"[ERROR] Could not click email tab logo: {e}")
-            return await save_debug_and_exit(f"Could not click email tab logo: {e}")
-            
-        print("[INFO] Entering credentials...")
-        try:
-            await page.locator("input[placeholder*='email']").first.fill(USER_EMAIL)
-            await page.locator("input[type='password']").first.fill(USER_PASS)
-            await page.wait_for_timeout(500)
-            
-            await page.locator(".btn-class-login").first.click()
-            print("[INFO] Credentials submitted. Waiting for authentication response...")
-            
-            # Poll for up to 15 seconds for captcha OR success cookies
-            for _ in range(30):
-                await page.wait_for_timeout(500)
+        if is_verification_active:
+            print("[INFO] Verification/Captcha page is already active. Skipping credentials entry...")
+        else:
+            # 3. Perform Login Flow (if not logged in)
+            try:
+                login_btn = page.locator(".login-btn").first
+                await login_btn.wait_for(state="visible", timeout=5000)
+                await login_btn.click()
+                await page.wait_for_timeout(2000)
+            except Exception:
+                pass
                 
-                # Stop waiting if captcha is visible
-                captcha_input = page.locator("input[placeholder*='verification code']").first
-                if await captcha_input.count() > 0:
-                    break
+            print("[INFO] Opening Email login dialog...")
+            try:
+                email_logo = page.locator(".other-item .logo").nth(1)
+                await email_logo.wait_for(state="visible", timeout=5000)
+                await email_logo.click()
+                await page.wait_for_timeout(2000)
+            except Exception as e:
+                # Recheck if captcha became visible while trying to open dialog (in case of automatic redirect)
+                if (await page.locator("input[placeholder*='verification code']").count() > 0) or "verification" in page.url.lower():
+                    print("[INFO] Verification page redirected during dialog wait. Proceeding...")
+                else:
+                    print(f"[ERROR] Could not click email tab logo: {e}")
+                    return await save_debug_and_exit(f"Could not click email tab logo: {e}")
+                
+            # If not already on verification page, enter credentials
+            if not ((await page.locator("input[placeholder*='verification code']").count() > 0) or "verification" in page.url.lower()):
+                print("[INFO] Entering credentials...")
+                try:
+                    await page.locator("input[placeholder*='email']").first.fill(USER_EMAIL)
+                    await page.locator("input[type='password']").first.fill(USER_PASS)
+                    await page.wait_for_timeout(500)
                     
-                # Stop waiting if ndus cookie is set
-                cookies = await context.cookies()
-                ndus_val = next((c["value"] for c in cookies if c["name"] == "ndus"), None)
-                if ndus_val:
-                    break
-        except Exception as e:
-            return await save_debug_and_exit(f"Failed to input credentials: {e}")
+                    await page.locator(".btn-class-login").first.click()
+                    print("[INFO] Credentials submitted. Waiting for authentication response...")
+                    
+                    # Poll for up to 15 seconds for captcha OR success cookies
+                    for _ in range(30):
+                        await page.wait_for_timeout(500)
+                        
+                        # Stop waiting if captcha is visible
+                        captcha_input = page.locator("input[placeholder*='verification code']").first
+                        if await captcha_input.count() > 0:
+                            break
+                            
+                        # Stop waiting if ndus cookie is set
+                        cookies = await context.cookies()
+                        ndus_val = next((c["value"] for c in cookies if c["name"] == "ndus"), None)
+                        if ndus_val:
+                            break
+                except Exception as e:
+                    return await save_debug_and_exit(f"Failed during credentials submission: {e}")
             
         # 4. Handle CAPTCHA / verification puzzle
         attempt_limit = 3
