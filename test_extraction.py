@@ -51,7 +51,8 @@ def test_extract():
     }
 
     domains = [
-        "https://www.terabox.com",
+        "https://dm.terabox.app",
+        "https://www.terabox.app",
         "https://dm.terabox.com"
     ]
 
