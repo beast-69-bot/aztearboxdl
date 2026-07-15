@@ -1,3 +1,6 @@
+"""
+TeraBox Extraction Test - Phase 2: Test /api/filemetas for premium dlink
+"""
 import os
 import re
 import json
@@ -13,31 +16,25 @@ STATIC_PROXY = os.getenv("STATIC_PROXY")
 def format_curl_proxy(proxy_str: str) -> dict:
     if not proxy_str:
         return {}
-    proxy_str = proxy_str.strip()
-    parts = proxy_str.split(":")
+    parts = proxy_str.strip().split(":")
     if len(parts) == 4:
         ip, port, user, pwd = parts
-        formatted = f"http://{user}:{pwd}@{ip}:{port}"
-    else:
-        if not proxy_str.startswith("http://") and not proxy_str.startswith("https://"):
-            formatted = f"http://{proxy_str}"
-        else:
-            formatted = proxy_str
-    return {"http": formatted, "https": formatted}
+        return {"http": f"http://{user}:{pwd}@{ip}:{port}",
+                "https": f"http://{user}:{pwd}@{ip}:{port}"}
+    p = proxy_str if proxy_str.startswith("http") else f"http://{proxy_str}"
+    return {"http": p, "https": p}
 
 
-def make_session(with_proxy=True):
-    session = curl_requests.Session(impersonate="chrome110")
-    if with_proxy and STATIC_PROXY:
-        session.proxies = format_curl_proxy(STATIC_PROXY)
-    return session
+def make_session():
+    s = curl_requests.Session(impersonate="chrome110")
+    if STATIC_PROXY:
+        s.proxies = format_curl_proxy(STATIC_PROXY)
+    return s
 
 
-def test_extract():
+def test_full_flow():
     surl = "6j9ZbdrBAAL6qvL70yPO2A"
     domain = "https://dm.1024tera.com"
-
-    print(f"surl: {surl} | domain: {domain}")
 
     # Load cookie
     cookie_header = ""
@@ -49,111 +46,131 @@ def test_extract():
     if not cookie_header and NDUS_COOKIE:
         cookie_header = f"ndus={NDUS_COOKIE}"
 
-    # ── STEP 1: Anonymous HTML → jsToken ─────────────────────────────────
-    print("\n" + "="*60)
-    print("STEP 1: Fetch HTML anonymously → extract jsToken")
-    print("="*60)
+    print(f"Cookie length: {len(cookie_header)}")
+    print(f"Proxy: {STATIC_PROXY[:30] if STATIC_PROXY else 'None'}...")
 
-    html_headers = {
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
+    # ─── PHASE 1: Anonymous HTML → jsToken ───────────────────────────────
+    print("\n" + "="*55)
+    print("PHASE 1: Anonymous HTML → jsToken")
+    print("="*55)
 
-    resp = make_session().get(
+    r = make_session().get(
         f"{domain}/sharing/link?surl={surl}",
-        headers=html_headers, timeout=15, allow_redirects=True
+        headers={"Accept": "text/html,*/*", "Accept-Language": "en-US,en;q=0.9"},
+        timeout=15, allow_redirects=True
     )
-    html = resp.text
-    print(f"HTML Status: {resp.status_code}, Length: {len(html)}")
+    print(f"Status: {r.status_code} | HTML length: {len(r.text)}")
 
     js_token = None
-    for pat in [r'fn%28%22([^%]+)%22%29', r'jsToken\s*=\s*["\']([^"\']+)["\']', r'"jsToken"\s*:\s*"([^"]+)"']:
-        m = re.search(pat, html)
-        if m:
-            js_token = m.group(1)
-            print(f"jsToken: {js_token[:50]}...")
-            break
-
-    if not js_token:
+    m = re.search(r'fn%28%22(.*?)%22%29', r.text)
+    if m:
+        js_token = m.group(1)
+        print(f"jsToken: {js_token[:50]}...  ✅")
+    else:
         print("ERROR: jsToken not found!")
         return
 
-    # ── STEP 2: Anonymous /share/list → FULL RESPONSE ────────────────────
-    print("\n" + "="*60)
-    print("STEP 2: Anonymous /share/list → FULL response")
-    print("="*60)
+    # ─── PHASE 1b: Anonymous /share/list → file metadata ─────────────────
+    print("\n" + "="*55)
+    print("PHASE 1b: Anonymous /share/list → file metadata")
+    print("="*55)
 
-    api_headers = {
-        "Accept": "application/json, text/plain, */*",
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer": f"{domain}/sharing/link?surl={surl}",
-    }
-    share_url = f"{domain}/share/list?app_id=250528&root=1&shorturl={surl}&jsToken={js_token}"
+    r2 = make_session().get(
+        f"{domain}/share/list",
+        params={"app_id": "250528", "jsToken": js_token, "shorturl": surl, "root": "1"},
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": f"{domain}/sharing/link?surl={surl}",
+        },
+        timeout=12
+    )
 
-    resp2 = make_session().get(share_url, headers=api_headers, timeout=12)
-    print(f"Status: {resp2.status_code}")
+    data = r2.json()
+    print(f"errno: {data.get('errno')}")
 
+    if data.get("errno") != 0 or not data.get("list"):
+        print(f"FAILED: {r2.text[:200]}")
+        return
+
+    item = data["list"][0]
+    filename = item.get("server_filename", "unknown")
+    size_mb = int(item.get("size", 0)) / 1024 / 1024
+    path = item.get("path", "")
+    fs_id = item.get("fs_id", "")
+    dlink_anon = item.get("dlink", "")
+
+    print(f"filename: {filename}")
+    print(f"size:     {size_mb:.1f} MB")
+    print(f"path:     {path}")
+    print(f"fs_id:    {fs_id}")
+    print(f"dlink:    {dlink_anon[:60] if dlink_anon else 'NOT in response'}")
+
+    # ─── PHASE 2: Cookie + /api/filemetas → Premium dlink ────────────────
+    print("\n" + "="*55)
+    print("PHASE 2: Cookie + /api/filemetas → Premium dlink")
+    print("="*55)
+
+    r3 = make_session().get(
+        f"{domain}/api/filemetas",
+        params={
+            "app_id": "250528",
+            "jsToken": js_token,
+            "target": f'["{path}"]',
+            "dlink": "1",
+        },
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": f"{domain}/disk/home",
+            "Cookie": cookie_header,
+        },
+        timeout=12
+    )
+
+    print(f"filemetas Status: {r3.status_code}")
     try:
-        data = resp2.json()
-        print(f"errno: {data.get('errno')}")
-        print(f"title: {data.get('title')}")
-        files = data.get("list", [])
-        print(f"Files found: {len(files)}")
-
-        for i, f in enumerate(files[:3]):
-            print(f"\n  File [{i}]:")
-            print(f"    name:   {f.get('server_filename')}")
-            print(f"    size:   {int(f.get('size', 0)) / 1024 / 1024:.1f} MB")
-            print(f"    fs_id:  {f.get('fs_id')}")
-            print(f"    dlink:  {f.get('dlink', 'NOT FOUND')}")
-            print(f"    path:   {f.get('path')}")
-
-        # also print any top-level keys we haven't seen
-        print(f"\n  Top-level keys: {list(data.keys())}")
-        print(f"\n  Full first file entry:\n{json.dumps(files[0], indent=2)}" if files else "")
-
+        d3 = r3.json()
+        print(f"errno: {d3.get('errno')}")
+        print(f"errmsg: {d3.get('errmsg', 'none')}")
+        info = d3.get("info", [])
+        if info:
+            dlink_premium = info[0].get("dlink", "")
+            print(f"dlink: {dlink_premium[:80] if dlink_premium else 'NOT FOUND'}...")
+            if dlink_premium:
+                print("\n✅ SUCCESS! Premium dlink obtained!")
+                print(f"\nFull dlink:\n{dlink_premium}")
+            else:
+                print(f"\ninfo[0] keys: {list(info[0].keys())}")
+        else:
+            print(f"Full response: {r3.text[:500]}")
     except Exception as e:
         print(f"JSON parse error: {e}")
-        print(resp2.text[:1000])
+        print(f"Raw: {r3.text[:300]}")
 
-    # ── STEP 3: Get dlink via /share/download with cookie ─────────────────
-    print("\n" + "="*60)
-    print("STEP 3: Try /share/download API with cookie to get premium dlink")
-    print("="*60)
+    # ─── PHASE 2b: Try /api/filemetas without cookie (compare) ───────────
+    print("\n" + "="*55)
+    print("PHASE 2b: /api/filemetas WITHOUT cookie (compare)")
+    print("="*55)
 
-    if files and files[0].get("fs_id"):
-        fs_id = files[0]["fs_id"]
-        # Try the fileinfo/download endpoint with cookie
-        dl_headers = {
+    r4 = make_session().get(
+        f"{domain}/api/filemetas",
+        params={
+            "app_id": "250528",
+            "jsToken": js_token,
+            "target": f'["{path}"]',
+            "dlink": "1",
+        },
+        headers={
             "Accept": "application/json, text/plain, */*",
-            "Referer": f"{domain}/sharing/link?surl={surl}",
-            "Cookie": cookie_header,
-        }
-        dl_url = (
-            f"{domain}/api/shorturlinfo"
-            f"?app_id=250528"
-            f"&shorturl={surl}"
-            f"&jsToken={js_token}"
-        )
-        resp3 = make_session().get(dl_url, headers=dl_headers, timeout=12)
-        print(f"shorturlinfo Status: {resp3.status_code}")
-        print(f"Response: {resp3.text[:400]}")
-
-        # Also try filemetas endpoint
-        print("\n--- Trying /api/filemetas ---")
-        meta_url = (
-            f"{domain}/api/filemetas"
-            f"?app_id=250528"
-            f"&target=%5B%22{files[0].get('path', '').replace('/', '%2F')}%22%5D"
-            f"&dlink=1"
-            f"&jsToken={js_token}"
-        )
-        resp4 = make_session().get(meta_url, headers=dl_headers, timeout=12)
-        print(f"filemetas Status: {resp4.status_code}")
-        print(f"Response: {resp4.text[:600]}")
-    else:
-        print("No fs_id available to test download endpoint.")
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": f"{domain}/disk/home",
+        },
+        timeout=12
+    )
+    print(f"Status: {r4.status_code}")
+    print(f"Response: {r4.text[:300]}")
 
 
 if __name__ == "__main__":
-    test_extract()
+    test_full_flow()
