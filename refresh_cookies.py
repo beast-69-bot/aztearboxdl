@@ -21,9 +21,8 @@ parser = argparse.ArgumentParser(description="TeraBox Cookie Refresher")
 parser.add_argument("--headless", action="store_true", help="Run the browser in headless mode")
 args = parser.parse_args()
 
-# Configuration Paths
-WORKSPACE_DIR = r"c:\Users\anshu\OneDrive\Documents\diskwala new latest"
-PARENT_DIR = r"c:\Users\anshu\OneDrive\Documents"
+# Determine workspace directory dynamically
+WORKSPACE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Manual dotenv loader to remove python-dotenv dependency
 def manual_load_dotenv(dotenv_path):
@@ -38,21 +37,48 @@ def manual_load_dotenv(dotenv_path):
                 key, val = line.split("=", 1)
                 os.environ[key.strip()] = val.strip().strip('"').strip("'")
 
-# Load credentials from root .env
+# Determine paths dynamically based on workspace structure
+if os.path.isdir(os.path.join(WORKSPACE_DIR, "aztearboxdl")):
+    # Local Windows Dev Environment
+    AZ_ENV = os.path.join(WORKSPACE_DIR, "aztearboxdl", ".env")
+    TERA_ENV = os.path.join(WORKSPACE_DIR, "TeraBox-Dl", ".env")
+    TERA_PY = os.path.join(WORKSPACE_DIR, "TeraBox-Dl", "terabox.py")
+    PARENT_DIR = os.path.dirname(WORKSPACE_DIR)
+else:
+    # VPS Linux Environment (inside aztearboxdl root)
+    AZ_ENV = os.path.join(WORKSPACE_DIR, ".env")
+    TERA_ENV = os.path.join(os.path.dirname(WORKSPACE_DIR), "TeraBox-Dl", ".env")
+    TERA_PY = os.path.join(os.path.dirname(WORKSPACE_DIR), "TeraBox-Dl", "terabox.py")
+    PARENT_DIR = os.path.dirname(WORKSPACE_DIR)
+
+# Load credentials from .env
 manual_load_dotenv(os.path.join(WORKSPACE_DIR, ".env"))
+manual_load_dotenv(AZ_ENV)
+
 USER_EMAIL = os.getenv("TERABOX_EMAIL")
 USER_PASS = os.getenv("TERABOX_PASSWORD")
 TWO_CAPTCHA_API_KEY = os.getenv("TWO_CAPTCHA_API_KEY")
 
+# Find the AZ NETWORK TG BOTS directory dynamically (handles different casing/separators)
+def find_bots_dir(parent):
+    options = ["AZ NETWORK TG BOTS", "AZ-NETWORK-TG-BOTS", "az-network-tg-bots", "az_network_tg_bots"]
+    for opt in options:
+        path = os.path.join(parent, opt)
+        if os.path.isdir(path):
+            return path
+    return os.path.join(parent, "AZ NETWORK TG BOTS") # fallback
+
+BOTS_DIR = find_bots_dir(PARENT_DIR)
+
 # Destination Paths to Update
 TARGET_PATHS = {
-    "az_dotenv": os.path.join(WORKSPACE_DIR, "aztearboxdl", ".env"),
-    "tera_dotenv": os.path.join(WORKSPACE_DIR, "TeraBox-Dl", ".env"),
-    "tera_py": os.path.join(WORKSPACE_DIR, "TeraBox-Dl", "terabox.py"),
-    "fap1_dotenv": os.path.join(PARENT_DIR, "AZ NETWORK TG BOTS", "faphouse_bots", "faphouse1", ".env"),
-    "fap2_dotenv": os.path.join(PARENT_DIR, "AZ NETWORK TG BOTS", "faphouse_bots", "faphouse2", ".env"),
-    "fap3_dotenv": os.path.join(PARENT_DIR, "AZ NETWORK TG BOTS", "faphouse_bots", "faphouse3", ".env"),
-    "faphouse_cookies_txt": os.path.join(PARENT_DIR, "AZ NETWORK TG BOTS", "faphouse_cookies.txt"),
+    "az_dotenv": AZ_ENV,
+    "tera_dotenv": TERA_ENV,
+    "tera_py": TERA_PY,
+    "fap1_dotenv": os.path.join(BOTS_DIR, "faphouse_bots", "faphouse1", ".env"),
+    "fap2_dotenv": os.path.join(BOTS_DIR, "faphouse_bots", "faphouse2", ".env"),
+    "fap3_dotenv": os.path.join(BOTS_DIR, "faphouse_bots", "faphouse3", ".env"),
+    "faphouse_cookies_txt": os.path.join(BOTS_DIR, "faphouse_cookies.txt"),
 }
 
 def urllib_verify_ndus(ndus):
@@ -321,7 +347,6 @@ async def main():
         sys.exit(1)
         
     # Check if current cookie is still valid
-    # Try reading from aztearboxdl/.env first
     current_ndus = None
     if os.path.exists(TARGET_PATHS["az_dotenv"]):
         with open(TARGET_PATHS["az_dotenv"], "r") as f:
