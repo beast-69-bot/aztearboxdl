@@ -604,27 +604,34 @@ async def perform_autologin():
                         await captcha_input.first.click()
                         await page.keyboard.press("Control+A")
                         await page.keyboard.press("Backspace")
+                        await page.wait_for_timeout(200)
                         
-                        await captcha_input.first.fill(code)
+                        # Type character-by-character with human delay to trigger React/Vue JS event handlers
+                        await captcha_input.first.type(code, delay=100)
                         await page.wait_for_timeout(500)
-                        
 
                         try:
-                            # Search for the Confirm button in closest ancestor div elements
-                            confirm_btn = None
-                            for level in range(1, 6):
-                                xpath_selector = f"xpath=ancestor::div[{level}]"
-                                btn = captcha_input.locator(xpath_selector).locator("button, input[type='submit'], .confirm-btn, [class*='confirm'], :has-text('Confirm')").first
-                                if await btn.count() > 0:
-                                    confirm_btn = btn
-                                    break
-                            
-                            if confirm_btn:
-                                print(f"[INFO] Clicking found confirm button at ancestor level...")
+                            # Try direct ID selector first (from HTML diagnostic)
+                            confirm_btn = page.locator("button#confirm, #confirm").first
+                            if await confirm_btn.count() > 0:
+                                print("[INFO] Clicking confirm button via direct ID selector...")
                                 await confirm_btn.click()
                             else:
-                                # Fallback to page-wide confirm button click
-                                await page.locator("button:has-text('Confirm'), .confirm-btn, [class*='confirm']").first.click()
+                                # Search for the Confirm button in closest ancestor div elements
+                                confirm_btn = None
+                                for level in range(1, 6):
+                                    xpath_selector = f"xpath=ancestor::div[{level}]"
+                                    btn = captcha_input.locator(xpath_selector).locator("button, input[type='submit'], .confirm-btn, [class*='confirm'], :has-text('Confirm')").first
+                                    if await btn.count() > 0:
+                                        confirm_btn = btn
+                                        break
+                                
+                                if confirm_btn:
+                                    print(f"[INFO] Clicking found confirm button at ancestor level...")
+                                    await confirm_btn.click()
+                                else:
+                                    # Fallback to page-wide confirm button click
+                                    await page.locator("button:has-text('Confirm'), .confirm-btn, [class*='confirm']").first.click()
                         except Exception as e:
                             print(f"[WARN] Failed to click confirm button: {e}")
                         
