@@ -443,7 +443,11 @@ async def perform_autologin():
                 await context.close()
                 return ndus_val, cookie_header
 
-            print("[INFO] Browser session is not usable. Proceeding to login flow without clearing cookies first.")
+            print("[INFO] Browser session is not usable. Clearing expired cookies to perform clean login...")
+            await context.clear_cookies()
+            # Reload page so the form is clean and doesn't have stale/expired cookie states
+            await page.goto("https://www.terabox.com/", wait_until="domcontentloaded")
+            await page.wait_for_timeout(3000)
         except Exception as e:
             print(f"[WARN] Error during session validation: {e}")
             
