@@ -274,6 +274,20 @@ async def perform_autologin():
         
         page = await context.new_page()
         
+        # Helper to capture debug screenshot, notify bot, and exit
+        async def save_debug_and_exit(error_msg):
+            debug_path = os.path.join(WORKSPACE_DIR, "debug_screenshot.png")
+            try:
+                await page.screenshot(path=debug_path)
+                print(f"[DEBUG] Saved failure screenshot to: {debug_path}")
+                # Escape markdown special characters for Telegram compatibility
+                clean_msg = re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', error_msg)
+                telegram_send_photo(debug_path, f"❌ *TeraBox Auto\\-Login Failed\\!*\nError: {clean_msg}")
+            except Exception as e:
+                print(f"[WARN] Failed to capture debug screenshot: {e}")
+            await context.close()
+            return None
+            
         # 1. Check if the saved context session is already logged in
         try:
             cookies = await context.cookies()
@@ -287,8 +301,11 @@ async def perform_autologin():
             
         # 2. Perform Login Flow
         print("[INFO] Navigating to TeraBox...")
-        await page.goto("https://www.terabox.com/", wait_until="domcontentloaded")
-        
+        try:
+            await page.goto("https://www.terabox.com/", wait_until="domcontentloaded")
+        except Exception as e:
+            return await save_debug_and_exit(f"Navigation failed: {e}")
+            
         try:
             login_btn = page.locator(".login-btn").first
             await login_btn.wait_for(state="visible", timeout=10000)
@@ -305,8 +322,7 @@ async def perform_autologin():
             await page.wait_for_timeout(2000)
         except Exception as e:
             print(f"[ERROR] Could not click email tab logo: {e}")
-            await context.close()
-            return None
+            return await save_debug_and_exit(f"Could not click email tab logo: {e}")
             
         print("[INFO] Entering credentials...")
         try:
@@ -332,9 +348,7 @@ async def perform_autologin():
                 if ndus_val:
                     break
         except Exception as e:
-            print(f"[ERROR] Failed to input login credentials: {e}")
-            await context.close()
-            return None
+            return await save_debug_and_exit(f"Failed to input credentials: {e}")
             
         # 3. Handle CAPTCHA / verification puzzle
         attempt_limit = 3
@@ -421,18 +435,8 @@ async def perform_autologin():
             await context.close()
             return ndus_val
             
-        # Save a debug screenshot to see what went wrong (e.g. invalid password, blocked, etc.)
-        debug_path = os.path.join(WORKSPACE_DIR, "debug_screenshot.png")
-        try:
-            await page.screenshot(path=debug_path)
-            print(f"[DEBUG] Saved failure screenshot to: {debug_path}")
-            # Notify Telegram Bot of the login failure
-            telegram_send_photo(debug_path, "❌ *TeraBox Auto-Login Failed\\!* View the attached failure screenshot for details\\.")
-        except Exception:
-            pass
-            
-        await context.close()
-        return None
+        # If we got here, verification failed
+        return await save_debug_and_exit("Login failed: ndus cookie was not found or was invalid after completing flow.")
 
 async def main():
     print("--- TeraBox Auto-Login & Cookie Refresh Utility ---")
