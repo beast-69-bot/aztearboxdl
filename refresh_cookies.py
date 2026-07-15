@@ -299,6 +299,25 @@ def update_env_variable(env_path, key, value):
         f.writelines(new_lines)
     return True
 
+def remove_env_variable(env_path, key):
+    """Remove a specific key from a .env file if present."""
+    if not os.path.exists(env_path):
+        return False
+    with open(env_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    new_lines = []
+    removed = False
+    for line in lines:
+        if line.strip().startswith(f"{key}="):
+            removed = True
+            continue
+        new_lines.append(line)
+    if removed:
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+        return True
+    return False
+
 def update_files(new_ndus, cookie_header=None):
     """Propagate the new ndus cookie to all required target configurations."""
     print("[INFO] Propagating new cookie to all bots...")
@@ -306,6 +325,7 @@ def update_files(new_ndus, cookie_header=None):
     # 1. Update aztearboxdl/.env
     if update_env_variable(TARGET_PATHS["az_dotenv"], "NDUS_COOKIE", new_ndus):
         print("[SUCCESS] Updated aztearboxdl/.env")
+    remove_env_variable(TARGET_PATHS["az_dotenv"], "TERABOX_COOKIE_HEADER")
         
     # 2. Update TeraBox-Dl/.env
     if update_env_variable(TARGET_PATHS["tera_dotenv"], "COOKIE_JSON", f'{{"ndus": "{new_ndus}"}}'):
