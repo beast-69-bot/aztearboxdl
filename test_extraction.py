@@ -1,5 +1,5 @@
 """
-TeraBox Extraction Test - Phase 4: sharedownload with sign+timestamp
+TeraBox Extraction Test - Phase 5: Deep HTML scan + all endpoint variants
 """
 import os
 import re
@@ -33,6 +33,23 @@ def make_session():
     return s
 
 
+def deep_scan_html(html: str):
+    """Print ALL occurrences of important keywords in the HTML."""
+    print("\n=== DEEP HTML SCAN ===")
+    keywords = ["FDTAER", "sign", "timestamp", "SIGN", "TIMESTAMP",
+                "yunData", "__NEXT_DATA__", "initialState", "shareid",
+                "share_id", "shareId", "logid", "bdstoken"]
+    for kw in keywords:
+        positions = [m.start() for m in re.finditer(re.escape(kw), html, re.IGNORECASE)]
+        if positions:
+            print(f"\n['{kw}'] found at {len(positions)} positions:")
+            for pos in positions[:3]:  # show first 3
+                snippet = html[max(0, pos-20):pos+100]
+                print(f"  pos={pos}: ...{repr(snippet)}...")
+        else:
+            print(f"\n['{kw}'] NOT FOUND")
+
+
 def test_full_flow():
     surl = "6j9ZbdrBAAL6qvL70yPO2A"
     domain = "https://dm.1024tera.com"
@@ -48,7 +65,7 @@ def test_full_flow():
         cookie_header = f"ndus={NDUS_COOKIE}"
 
     # ─── STEP 1: Anonymous HTML ───────────────────────────────────────────
-    print("STEP 1: Fetching HTML anonymously...")
+    print("STEP 1: Fetching HTML...")
     r = make_session().get(
         f"{domain}/sharing/link?surl={surl}",
         headers={"Accept": "text/html,*/*", "Accept-Language": "en-US,en;q=0.9"},
@@ -57,54 +74,22 @@ def test_full_flow():
     html = r.text
     print(f"Status: {r.status_code} | HTML: {len(html)} chars")
 
-    # Extract jsToken
+    # Save full HTML for inspection
+    with open("/tmp/terabox_page.html", "w", encoding="utf-8") as f:
+        f.write(html)
+    print("Full HTML saved to /tmp/terabox_page.html")
+
+    # Deep scan
+    deep_scan_html(html)
+
+    # jsToken
     js_token = ""
     m = re.search(r'fn%28%22(.*?)%22%29', html)
     if m:
         js_token = m.group(1)
-        print(f"jsToken: ✅ {js_token[:40]}...")
-
-    # Extract sign from HTML (multiple patterns)
-    sign = ""
-    for pat in [
-        r'"sign"\s*:\s*"(FDTAER[^"]+)"',
-        r"'sign'\s*:\s*'(FDTAER[^']+)'",
-        r'sign\s*=\s*"(FDTAER[^"]+)"',
-        r'sign\s*=\s*\'(FDTAER[^\']+)\'',
-        r'SIGN\s*=\s*"(FDTAER[^"]+)"',
-        r'yunData\.SIGN\s*=\s*"(FDTAER[^"]+)"',
-    ]:
-        m = re.search(pat, html)
-        if m:
-            sign = m.group(1)
-            print(f"sign (HTML): ✅ {sign[:50]}...")
-            break
-    if not sign:
-        print("sign: ❌ NOT FOUND in HTML (will try thumbnail URL)")
-
-    # Extract timestamp from HTML
-    timestamp = ""
-    for pat in [
-        r'"timestamp"\s*:\s*"(\d+)"',
-        r"'timestamp'\s*:\s*'(\d+)'",
-        r'timestamp\s*=\s*"(\d+)"',
-        r'TIMESTAMP\s*=\s*"(\d+)"',
-        r'yunData\.TIMESTAMP\s*=\s*"(\d+)"',
-    ]:
-        m = re.search(pat, html)
-        if m:
-            timestamp = m.group(1)
-            print(f"timestamp (HTML): ✅ {timestamp}")
-            break
-    if not timestamp:
-        print("timestamp: ❌ NOT FOUND in HTML")
-
-    if not js_token:
-        print("ERROR: No jsToken. Aborting.")
-        return
 
     # ─── STEP 2: Anonymous /share/list ───────────────────────────────────
-    print("\nSTEP 2: Anonymous /share/list...")
+    print("\n\nSTEP 2: Anonymous /share/list...")
     r2 = make_session().get(
         f"{domain}/share/list",
         params={"app_id": "250528", "jsToken": js_token, "shorturl": surl, "root": "1"},
@@ -118,50 +103,55 @@ def test_full_flow():
     d2 = r2.json()
     uk = str(d2.get("uk", ""))
     share_id = str(d2.get("share_id", ""))
+    server_time = str(d2.get("server_time", ""))
     items = d2.get("list", [])
     item = items[0] if items else {}
     fs_id = item.get("fs_id", "")
-    thumb_url = ""
+    md5 = item.get("md5", "")
+    size = item.get("size", "0")
     thumbs = item.get("thumbs", {})
-    if thumbs:
-        thumb_url = thumbs.get("url1", thumbs.get("url2", ""))
+    thumb_url = thumbs.get("url1", "")
 
-    print(f"uk: {uk} | share_id: {share_id} | fs_id: {fs_id}")
-    print(f"thumb url: {thumb_url[:80]}...")
+    # Extract sign+time from thumb URL
+    sign = ""
+    timestamp = ""
+    if thumb_url:
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(thumb_url).query)
+        sign = qs.get("sign", [""])[0]
+        timestamp = qs.get("time", [""])[0]
 
-    # Extract sign+timestamp from thumbnail URL if not found in HTML
-    if thumb_url and (not sign or not timestamp):
-        parsed = urllib.parse.urlparse(thumb_url)
-        qs = urllib.parse.parse_qs(parsed.query)
-        if not sign and "sign" in qs:
-            sign = qs["sign"][0]
-            print(f"sign (thumb URL): ✅ {sign[:50]}...")
-        if not timestamp and "time" in qs:
-            timestamp = qs["time"][0]
-            print(f"timestamp (thumb URL): ✅ {timestamp}")
+    print(f"uk={uk} | share_id={share_id} | fs_id={fs_id}")
+    print(f"server_time={server_time} | sign={sign[:30]}... | timestamp={timestamp}")
 
-    print(f"\nAll params for sharedownload:")
-    print(f"  uk:        {uk}")
-    print(f"  share_id:  {share_id}")
-    print(f"  fs_id:     {fs_id}")
-    print(f"  sign:      {sign[:40] if sign else '❌ MISSING'}...")
-    print(f"  timestamp: {timestamp if timestamp else '❌ MISSING'}")
-    print(f"  jsToken:   {js_token[:40]}...")
-
-    # ─── STEP 3: /api/sharedownload with all params + cookie ─────────────
-    print("\nSTEP 3: /api/sharedownload (cookie + sign + timestamp)...")
+    # ─── STEP 3: /share/list WITH web=1 + sign + timestamp (anon) ────────
+    print("\nSTEP 3: /share/list with web=1 + sign + timestamp (anonymous)...")
     r3 = make_session().get(
-        f"{domain}/api/sharedownload",
+        f"{domain}/share/list",
         params={
-            "app_id": "250528",
-            "jsToken": js_token,
-            "uk": uk,
-            "shareid": share_id,
-            "fs_ids": f"[{fs_id}]",
-            "sign": sign,
-            "timestamp": timestamp,
-            "type": "dlink",
-            "product": "share",
+            "app_id": "250528", "jsToken": js_token, "shorturl": surl,
+            "root": "1", "web": "1", "channel": "chunlei",
+            "sign": sign, "timestamp": timestamp,
+            "uk": uk, "shareid": share_id,
+        },
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": f"{domain}/sharing/link?surl={surl}",
+        },
+        timeout=12
+    )
+    d3 = r3.json()
+    items3 = d3.get("list", [{}])
+    dlink3 = items3[0].get("dlink", "") if items3 else ""
+    print(f"errno: {d3.get('errno')} | dlink: {'✅ '+dlink3[:60] if dlink3 else '❌ NOT FOUND'}")
+
+    # ─── STEP 4: /share/list WITH web=1 + cookie ─────────────────────────
+    print("\nSTEP 4: /share/list with web=1 + COOKIE...")
+    r4 = make_session().get(
+        f"{domain}/share/list",
+        params={
+            "app_id": "250528", "jsToken": js_token, "shorturl": surl,
+            "root": "1", "web": "1", "channel": "chunlei",
         },
         headers={
             "Accept": "application/json, text/plain, */*",
@@ -171,33 +161,66 @@ def test_full_flow():
         },
         timeout=12
     )
-    print(f"Status: {r3.status_code}")
-    print(f"Response: {r3.text[:600]}")
+    d4 = r4.json()
+    items4 = d4.get("list", [{}])
+    dlink4 = items4[0].get("dlink", "") if items4 else ""
+    print(f"errno: {d4.get('errno')} | dlink: {'✅ '+dlink4[:60] if dlink4 else '❌ NOT FOUND'}")
 
-    # ─── STEP 4: /api/sharedownload WITHOUT cookie ────────────────────────
-    print("\nSTEP 4: /api/sharedownload WITHOUT cookie (compare)...")
-    r4 = make_session().get(
+    # ─── STEP 5: POST /api/sharedownload ─────────────────────────────────
+    print("\nSTEP 5: POST /api/sharedownload...")
+    r5 = make_session().post(
         f"{domain}/api/sharedownload",
-        params={
-            "app_id": "250528",
-            "jsToken": js_token,
+        params={"app_id": "250528", "jsToken": js_token},
+        data={
             "uk": uk,
             "shareid": share_id,
-            "fs_ids": f"[{fs_id}]",
+            "fs_ids": json.dumps([int(fs_id)]),
             "sign": sign,
             "timestamp": timestamp,
             "type": "dlink",
             "product": "share",
+            "nozip": "0",
         },
         headers={
             "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/x-www-form-urlencoded",
             "X-Requested-With": "XMLHttpRequest",
             "Referer": f"{domain}/sharing/link?surl={surl}",
+            "Cookie": cookie_header,
         },
         timeout=12
     )
-    print(f"Status: {r4.status_code}")
-    print(f"Response: {r4.text[:600]}")
+    print(f"Status: {r5.status_code}")
+    print(f"Response: {r5.text[:500]}")
+
+    # ─── STEP 6: Try constructing dlink from thumb sign ───────────────────
+    print("\nSTEP 6: Construct dlink URL from thumb sign and test HEAD...")
+    if md5 and sign and timestamp:
+        constructed = (
+            f"https://d.1024tera.com/file/{md5}"
+            f"?fid={uk}-250528-{fs_id}"
+            f"&time={timestamp}"
+            f"&rt=sh"
+            f"&sign={urllib.parse.quote(sign)}"
+            f"&expires=8h"
+            f"&chkv=0&chkbd=0&chkpc="
+            f"&size={size}"
+            f"&vuk={uk}"
+        )
+        print(f"Constructed URL:\n{constructed}")
+        try:
+            hr = make_session().head(constructed, headers={
+                "Cookie": cookie_header,
+                "Referer": f"{domain}/sharing/link?surl={surl}",
+            }, timeout=10, allow_redirects=True)
+            print(f"HEAD Status: {hr.status_code}")
+            print(f"Content-Length: {hr.headers.get('Content-Length', 'N/A')}")
+            print(f"Content-Type: {hr.headers.get('Content-Type', 'N/A')}")
+            print(f"Accept-Ranges: {hr.headers.get('Accept-Ranges', 'N/A')}")
+        except Exception as e:
+            print(f"HEAD failed: {e}")
+    else:
+        print("Missing md5/sign/timestamp for construction")
 
 
 if __name__ == "__main__":
