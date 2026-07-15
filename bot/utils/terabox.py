@@ -12,18 +12,13 @@ from bot.utils.progress import progress_callback
 
 
 def _auth_cookie_header() -> str:
-    if config.TERABOX_COOKIE_HEADER:
-        return config.TERABOX_COOKIE_HEADER
     if config.NDUS_COOKIE:
         return f"ndus={config.NDUS_COOKIE}"
     return ""
 
 
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 Chrome/145.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
     "Accept-Encoding": "gzip, deflate, br",

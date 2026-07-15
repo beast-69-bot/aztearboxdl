@@ -306,8 +306,6 @@ def update_files(new_ndus, cookie_header=None):
     # 1. Update aztearboxdl/.env
     if update_env_variable(TARGET_PATHS["az_dotenv"], "NDUS_COOKIE", new_ndus):
         print("[SUCCESS] Updated aztearboxdl/.env")
-    if cookie_header and update_env_variable(TARGET_PATHS["az_dotenv"], "TERABOX_COOKIE_HEADER", cookie_header):
-        print("[SUCCESS] Updated aztearboxdl/.env full cookie header")
         
     # 2. Update TeraBox-Dl/.env
     if update_env_variable(TARGET_PATHS["tera_dotenv"], "COOKIE_JSON", f'{{"ndus": "{new_ndus}"}}'):

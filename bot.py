@@ -76,7 +76,7 @@ def get_terabox_data(surl: str):
     session = curl_requests.Session(impersonate="chrome110")
     session.cookies.update({"ndus": NDUS_COOKIE})
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/145.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
 
     first_url = f"https://dm.terabox.app/sharing/link?surl={short_url}"
@@ -180,7 +180,7 @@ async def download_file(dlink, filename, message: Message, total_size: int):
     session = curl_requests.Session(impersonate="chrome110")
     session.cookies.update({"ndus": NDUS_COOKIE})
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/145.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "*/*"
     }
     
