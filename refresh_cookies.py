@@ -732,6 +732,16 @@ async def perform_autologin():
         # 7. Success verification
         ndus_val, cookie_header = await collect_browser_session("Post-login browser session")
         if cookie_header and (urllib_verify_cookie_header(cookie_header) or ndus_val):
+            # Capture and send successful logged-in state screenshot to Telegram
+            success_screenshot_path = os.path.join(WORKSPACE_DIR, "debug_success.png")
+            try:
+                # Wait 3 seconds for UI/dashboard elements to render cleanly
+                await page.wait_for_timeout(3000)
+                await page.screenshot(path=success_screenshot_path)
+                telegram_send_photo(success_screenshot_path, "🎉 *TeraBox Login Successful\\!* Saved cookies successfully\\.")
+            except Exception as e:
+                print(f"[WARN] Failed to send success screenshot: {e}")
+
             # Clean up captcha file if exists
             captcha_img_path = os.path.join(WORKSPACE_DIR, "captcha.png")
             if os.path.exists(captcha_img_path):
