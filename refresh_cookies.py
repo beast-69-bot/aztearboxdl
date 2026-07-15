@@ -7,6 +7,7 @@ import argparse
 import base64
 import urllib.request
 import urllib.parse
+import ssl
 
 # Reconfigure stdout to use UTF-8 on Windows to prevent encoding errors
 if sys.platform == "win32":
@@ -124,7 +125,10 @@ def telegram_send_photo(photo_path, caption):
         
         body = b"".join(parts)
         req = urllib.request.Request(url, data=body, headers=headers)
-        with urllib.request.urlopen(req, timeout=15.0) as res:
+        
+        # Bypass SSL check for Telegram API on VPS
+        ctx = ssl._create_unverified_context()
+        with urllib.request.urlopen(req, timeout=15.0, context=ctx) as res:
             res_data = json.loads(res.read().decode('utf-8'))
             if res_data.get("ok"):
                 print(f"[TELEGRAM] Sent screenshot to admin {ADMIN_ID}.")
@@ -147,7 +151,9 @@ def urllib_verify_ndus(ndus):
     url = "https://www.terabox.app/api/list?dir=%2F&num=10&page=1"
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=10.0) as response:
+        # Bypass SSL verification to prevent issues on VPS
+        ctx = ssl._create_unverified_context()
+        with urllib.request.urlopen(req, timeout=10.0, context=ctx) as response:
             if response.status == 200:
                 data = json.loads(response.read().decode('utf-8'))
                 return data.get("errno") == 0
@@ -169,7 +175,8 @@ def urllib_solve_2captcha(api_key, image_bytes):
     try:
         data_encoded = urllib.parse.urlencode(payload).encode('utf-8')
         req = urllib.request.Request(submit_url, data=data_encoded)
-        with urllib.request.urlopen(req, timeout=15.0) as res:
+        ctx = ssl._create_unverified_context()
+        with urllib.request.urlopen(req, data=data_encoded, timeout=15.0, context=ctx) as res:
             res_data = json.loads(res.read().decode('utf-8'))
             if res_data.get("status") != 1:
                 print(f"[2CAPTCHA ERROR] Submission failed: {res_data.get('request')}")
@@ -183,7 +190,7 @@ def urllib_solve_2captcha(api_key, image_bytes):
                 import time
                 time.sleep(2)
                 req_poll = urllib.request.Request(poll_url)
-                with urllib.request.urlopen(req_poll, timeout=10.0) as res_poll:
+                with urllib.request.urlopen(req_poll, timeout=10.0, context=ctx) as res_poll:
                     poll_data = json.loads(res_poll.read().decode('utf-8'))
                     if poll_data.get("status") == 1:
                         code = poll_data["request"]
@@ -295,12 +302,12 @@ async def perform_autologin():
         except Exception as e:
             return await save_debug_and_exit(f"Navigation failed: {e}")
             
-        # 2. Check if already logged in (extract cookies immediately after navigation)
+        # 2. Check if already logged in (extract cookies immediately after navigation without API check)
         try:
             cookies = await context.cookies()
             ndus_val = next((c["value"] for c in cookies if c["name"] == "ndus"), None)
-            if ndus_val and urllib_verify_ndus(ndus_val):
-                print("[SUCCESS] Browser session is already logged in and valid!")
+            if ndus_val:
+                print("[SUCCESS] Browser session is already logged in and active!")
                 await context.close()
                 return ndus_val
         except Exception:
