@@ -8,6 +8,7 @@ from bot.client import app
 from bot.utils.terabox import get_terabox_info, download_file, check_ndus_cookie
 from bot.utils.progress import progress_callback
 from bot.utils.database import add_user, increment_stat
+from bot.utils.rate_limiter import RequestGuard, RateLimitExceeded
 from config import ADMIN_ID
 
 
@@ -24,7 +25,7 @@ async def delete_message_after_delay(client, chat_id: int, message_id: int, dela
 @app.on_message(filters.text & filters.private & ~filters.command(["start", "help", "myid", "broadcast", "stats"]))
 async def handle_link(client, message: Message):
     user_id = message.from_user.id
-    add_user(user_id)  # Save active user to database
+    add_user(user_id)
 
     text = message.text
     urls = re.findall(r"(https?://[^\s]+)", text)
@@ -42,19 +43,14 @@ async def handle_link(client, message: Message):
         await message.reply_text(error_text)
         return
 
-    user_id = message.from_user.id
-    
-    # Simple in-memory limit tracking
+    # ── Daily limit check ─────────────────────────────────────────────
     current_date = time.strftime("%Y-%m-%d")
-    
-    # Initialize trackers if not present
     if not hasattr(app, "user_limits"):
         app.user_limits = {}
     if not hasattr(app, "limit_date") or app.limit_date != current_date:
         app.user_limits = {}
         app.limit_date = current_date
-        
-    # Check limit if the user is not the admin
+
     if user_id != ADMIN_ID:
         user_usage = app.user_limits.get(user_id, 0)
         if user_usage >= 10:
@@ -76,15 +72,30 @@ async def handle_link(client, message: Message):
         return
 
     surl = match.group(1)
+
+    # ── Rate Limit Guard (prevents account flagging) ──────────────────
+    try:
+        async with RequestGuard(user_id):
+            await _process_download(client, message, user_id, surl)
+    except RateLimitExceeded as e:
+        msg = (
+            f"<b>⏳ ᴘʟᴇᴀꜱᴇ ᴡᴀɪᴛ</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"{e}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        await message.reply_text(msg)
+
+
+async def _process_download(client, message: Message, user_id: int, surl: str):
+    """Core download-upload flow. Always called inside RequestGuard."""
     status = await message.reply_text("<b>🔍 ᴠᴀʟɪᴅᴀᴛɪɴɢ ʟɪɴᴋ...</b>")
 
-
-    # ── Fetch file info ──────────────────────────────────────────────
+    # ── Fetch file info ───────────────────────────────────────────────
     await status.edit_text("<b>📥 ᴇxᴛʀᴀᴄᴛɪɴɢ ɪɴꜰᴏ...</b>")
     info = await asyncio.to_thread(get_terabox_info, surl)
 
     if not info:
-        # Check if cookie has expired/invalid (internally triggers auto-refresh if needed)
         is_cookie_valid = await asyncio.to_thread(check_ndus_cookie)
         if is_cookie_valid:
             await status.edit_text("✅ **Cookies refreshed successfully!** Retrying extraction...")
@@ -98,48 +109,42 @@ async def handle_link(client, message: Message):
         await status.edit_text("<b>✖️ ᴇxᴛʀᴀᴄᴛɪᴏɴ ꜰᴀɪʟᴇᴅ</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\nFile may be deleted or set to private.")
         return
 
-    filename = info["filename"]
+    filename  = info["filename"]
     total_size = info["size"]
-    dlink = info["dlink"]
-    referer = info.get("referer")
-    origin = info.get("origin")
-    size_mb = total_size / (1024 * 1024)
+    dlink     = info["dlink"]
+    referer   = info.get("referer")
+    origin    = info.get("origin")
+    size_mb   = total_size / (1024 * 1024)
 
     if size_mb > 2000:
         await status.edit_text("<b>✖️ ꜰɪʟᴇ ᴛᴏᴏ ʟᴀʀɢᴇ</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\nFile exceeds 2 GB Telegram limit.")
         return
 
-    # ── Download to VPS ──────────────────────────────────────────────
+    # ── Download to VPS ───────────────────────────────────────────────
     await status.edit_text(f"<b>⬇️ ᴅᴏᴡɴʟᴏᴀᴅɪɴɢ...</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n▸ <b>ꜰɪʟᴇ</b>: <code>{filename}</code>")
     try:
         local_path = await download_file(dlink, filename, status, total_size, referer=referer, origin=origin)
-        increment_stat("downloads")  # Increment downloads stat
+        increment_stat("downloads")
     except Exception as e:
         await status.edit_text(f"<b>✖️ ᴅᴏᴡɴʟᴏᴀᴅ ꜰᴀɪʟᴇᴅ</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n<code>{e}</code>")
         return
 
-    # ── Upload to Telegram ───────────────────────────────────────────
+    # ── Upload to Telegram ────────────────────────────────────────────
     upload_start = time.time()
     caption = (
         "<b>🎬 ꜱᴛʀᴇᴀᴍ ʀᴇᴀᴅʏ</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"▸ <b>ꜰɪʟᴇ</b>: <code>{filename}</code>\n"
-        f"▸ <b><b>ꜱɪᴢᴇ</b></b>: <code>{size_mb:.2f} MB</code>\n"
+        f"▸ <b>ꜱɪᴢᴇ</b>: <code>{size_mb:.2f} MB</code>\n"
         "▸ <b>⏳ Auto Delete:</b> <code>Active (20 mins)</code>\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "⚡ VPS Hosted | 🚫 No Ads | ♾ Unlimited Speed\n"
         "<i>Powered by</i> @az_hawas_adda 🔥"
     )
-    
-    # Use PNG first to avoid JPEG compression quality loss
+
     thumb_png = os.path.join(os.path.dirname(__file__), "..", "utils", "thumbnail.png")
     thumb_jpg = os.path.join(os.path.dirname(__file__), "..", "utils", "thumbnail.jpg")
-    if os.path.exists(thumb_png):
-        thumb_path = thumb_png
-    elif os.path.exists(thumb_jpg):
-        thumb_path = thumb_jpg
-    else:
-        thumb_path = None
+    thumb_path = thumb_png if os.path.exists(thumb_png) else (thumb_jpg if os.path.exists(thumb_jpg) else None)
 
     try:
         sent_video = await client.send_video(
@@ -152,12 +157,10 @@ async def handle_link(client, message: Message):
             progress_args=(status, "Uploading to Telegram", filename, upload_start),
         )
         await status.delete()
-        increment_stat("uploads")  # Increment uploads stat
-        
-        # Start background task to delete the message after 20 minutes (1200 seconds)
+        increment_stat("uploads")
+
         asyncio.create_task(delete_message_after_delay(client, message.chat.id, sent_video.id, 1200))
-        
-        # Increment usage count upon successful completion
+
         if user_id != ADMIN_ID:
             app.user_limits[user_id] = app.user_limits.get(user_id, 0) + 1
             remaining = 10 - app.user_limits[user_id]
@@ -170,13 +173,12 @@ async def handle_link(client, message: Message):
             )
             await message.reply_text(success_msg)
         else:
-            admin_msg = (
+            await message.reply_text(
                 "<b>✔ ᴘʀᴏᴄᴇꜱꜱ ᴄᴏᴍᴘʟᴇᴛᴇᴅ</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 "▸ ⚠️ <i>This video will auto-delete in 20 minutes!</i>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━"
             )
-            await message.reply_text(admin_msg)
     except Exception as e:
         await status.edit_text(f"<b>✖️ ᴜᴘʟᴏᴀᴅ ꜰᴀɪʟᴇᴅ</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n<code>{e}</code>")
     finally:
