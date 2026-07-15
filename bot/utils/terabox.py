@@ -171,7 +171,7 @@ def check_ndus_cookie() -> bool:
             print("[INFO] Verifying cookie using configured STATIC_PROXY...")
             
         session.cookies.update({"ndus": config.NDUS_COOKIE})
-        api_url = "https://www.terabox.app/api/list?dir=%2F&num=10&page=1"
+        api_url = "https://www.terabox.com/api/list?dir=%2F&num=10&page=1"
 
         try:
             headers = dict(HEADERS)

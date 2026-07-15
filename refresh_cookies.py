@@ -205,7 +205,7 @@ def urllib_verify_cookie_header(cookie_header):
         "Cookie": cookie_header,
     }
 
-    url = "https://www.terabox.app/api/list?dir=%2F&num=10&page=1"
+    url = "https://www.terabox.com/api/list?dir=%2F&num=10&page=1"
     req = urllib.request.Request(url, headers=headers)
     try:
         # Bypass SSL verification to prevent issues on VPS
