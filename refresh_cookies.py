@@ -206,39 +206,30 @@ async def perform_autologin():
         # 3. Handle CAPTCHA / verification puzzle
         captcha_input = page.locator("input[placeholder*='verification code']")
         if await captcha_input.count() > 0 or "verification" in page.url.lower():
-            print("\n[WARNING] CAPTCHA / Puzzle challenge detected!")
+            print("\n[WARNING] CAPTCHA / Verification challenge detected!")
             
-            if args.headless:
-                print("[ERROR] Headless mode is active. Cannot display browser window to solve CAPTCHA.")
-                print("[INFO] Please run the script in HEADFUL mode (without --headless) to solve it once.")
+            captcha_img_path = os.path.join(WORKSPACE_DIR, "captcha.png")
+            await page.screenshot(path=captcha_img_path)
+            print(f"[ACTION REQUIRED] Please open the image '{captcha_img_path}' to see the code.")
+            
+            if sys.stdin.isatty():
+                code = input(">>> Enter the 4-letter CAPTCHA code shown in the image: ").strip()
+                try:
+                    await captcha_input.first.fill(code)
+                    await page.wait_for_timeout(500)
+                    await page.locator("text=Confirm").first.click()
+                    print("[INFO] Captcha submitted. Processing...")
+                    await page.wait_for_timeout(5000)
+                except Exception as e:
+                    print(f"[ERROR] Failed to submit captcha: {e}")
+                    await context.close()
+                    return None
+            else:
+                print("[ERROR] Non-interactive environment. Cannot solve captcha programmatically.")
                 await context.close()
                 return None
-                
-            print("[ACTION REQUIRED] Please solve the puzzle/captcha in the open browser window.")
-            print("[INFO] Waiting up to 60 seconds for you to solve the CAPTCHA...")
             
-            # Poll cookies for up to 60 seconds
-            found_cookie = None
-            for attempt in range(60):
-                try:
-                    cookies = await context.cookies()
-                    ndus_val = next((c["value"] for c in cookies if c["name"] == "ndus"), None)
-                    if ndus_val and await verify_ndus(ndus_val):
-                        found_cookie = ndus_val
-                        break
-                except Exception:
-                    print("[INFO] Browser window closed by user.")
-                    break
-                await asyncio.sleep(1)
-                
-            if not found_cookie:
-                screenshot_path = os.path.join(WORKSPACE_DIR, "debug_screenshot.png")
-                await page.screenshot(path=screenshot_path)
-                print(f"[DEBUG] Saved debug screenshot to {screenshot_path}")
-            await context.close()
-            return found_cookie
-            
-        # 4. Success verification (if no captcha was triggered)
+        # 4. Success verification
         cookies = await context.cookies()
         ndus_val = next((c["value"] for c in cookies if c["name"] == "ndus"), None)
         if ndus_val and await verify_ndus(ndus_val):
