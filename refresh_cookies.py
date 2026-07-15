@@ -512,7 +512,7 @@ async def perform_autologin():
                     return await save_debug_and_exit(f"Failed during credentials submission: {e}")
             
         # 4. Handle CAPTCHA / verification puzzle
-        attempt_limit = 3
+        attempt_limit = 5
         for try_num in range(attempt_limit):
             captcha_input = page.locator("#box #input, #box input, input[placeholder*='verification code']")
             if await captcha_input.count() > 0 or "verification" in page.url.lower():
@@ -585,6 +585,14 @@ async def perform_autologin():
                         else:
                             image_bytes = await canvas_locator.screenshot()
                         code = urllib_solve_2captcha(TWO_CAPTCHA_API_KEY, image_bytes)
+                        
+                        # Client-side validation: if code is less than 4 characters, it is invalid and will block submit.
+                        # Refresh the captcha by clicking it and try again.
+                        if code and len(code) < 4:
+                            print(f"[WARN] Solved code '{code}' is too short (< 4 chars). Refreshing captcha...")
+                            await canvas_locator.click()
+                            await page.wait_for_timeout(1500)
+                            continue
                     except Exception as e:
                         print(f"[2CAPTCHA ERROR] Automatic solve failed: {e}")
                 
