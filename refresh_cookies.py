@@ -637,20 +637,51 @@ async def perform_autologin():
 
         # 4. Perform Login Credentials Flow
         print("[INFO] Performing Login Credentials Flow...")
+        # 4. Perform Login Credentials Flow
+        print("[INFO] Performing Login Credentials Flow...")
         try:
-            login_btn = page.locator(".login-btn").first
-            await login_btn.wait_for(state="visible", timeout=5000)
-            await login_btn.click()
-            await page.wait_for_timeout(2000)
-        except Exception:
-            pass
+            # Check if login modal is already open
+            email_input = page.locator("input[placeholder*='email']").first
+            if await email_input.count() == 0:
+                login_btn = page.locator(".login-btn").first
+                await login_btn.wait_for(state="visible", timeout=6000)
+                await login_btn.click()
+                await page.wait_for_timeout(2000)
+        except Exception as e:
+            print(f"[INFO] Login button check skipped or handled: {e}")
             
         print("[INFO] Opening Email login dialog...")
         try:
-            email_logo = page.locator(".other-item .logo").nth(1)
-            await email_logo.wait_for(state="visible", timeout=5000)
-            await email_logo.click()
-            await page.wait_for_timeout(2000)
+            # Try multiple selectors to open/switch to the Email login tab
+            email_selectors = [
+                ".other-item .logo >> nth=1",
+                "text=Email",
+                "div:has-text('Email')",
+                ".email-login-tab",
+                "[class*='email']",
+                ".other-item >> nth=1"
+            ]
+            
+            email_tab_clicked = False
+            for sel in email_selectors:
+                try:
+                    locator = page.locator(sel).first
+                    if await locator.count() > 0 and await locator.is_visible():
+                        print(f"[INFO] Trying to click email tab using selector: {sel}")
+                        await locator.click()
+                        await page.wait_for_timeout(1500)
+                        
+                        # Verify if input fields are now visible
+                        email_input = page.locator("input[placeholder*='email']").first
+                        if await email_input.count() > 0:
+                            email_tab_clicked = True
+                            print("[INFO] Successfully switched to email login tab.")
+                            break
+                except Exception:
+                    pass
+                    
+            if not email_tab_clicked:
+                raise Exception("Could not find or switch to email input fields using any known selector.")
         except Exception as e:
             return await save_debug_and_exit(f"Could not click email tab logo: {e}")
             
