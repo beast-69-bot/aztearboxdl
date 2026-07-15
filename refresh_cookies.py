@@ -625,12 +625,32 @@ async def perform_autologin():
                         except Exception as e:
                             print(f"[WARN] Failed to send typed screenshot: {e}")
 
+                        # Force React state synchronization using native JS input & change events
+                        try:
+                            await page.evaluate(f"""() => {{
+                                const input = document.getElementById('input') || document.querySelector('#box input');
+                                if (input) {{
+                                    input.value = '{code}';
+                                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                }}
+                            }}""")
+                            print("[INFO] Dispatched input and change events to sync React state.")
+                        except Exception as e:
+                            print(f"[WARN] Failed to dispatch events: {e}")
+
                         try:
                             # Try specific confirm button inside #box first
                             confirm_btn = page.locator("#box #confirm, #box button, button#confirm, #confirm").first
                             if await confirm_btn.count() > 0:
                                 print("[INFO] Clicking confirm button via direct ID selector...")
                                 await confirm_btn.click()
+                                await page.wait_for_timeout(200)
+                                # Natively click via JS in the browser page to ensure it fires React handlers
+                                try:
+                                    await page.evaluate("const btn = document.getElementById('confirm') || document.querySelector('#box button'); if(btn) btn.click();")
+                                except Exception:
+                                    pass
                             else:
                                 # Search for the Confirm button in closest ancestor div elements
                                 confirm_btn = None
@@ -644,6 +664,11 @@ async def perform_autologin():
                                 if confirm_btn:
                                     print(f"[INFO] Clicking found confirm button at ancestor level...")
                                     await confirm_btn.click()
+                                    await page.wait_for_timeout(200)
+                                    try:
+                                        await page.evaluate("const btn = document.querySelector('#box button') || document.querySelector('button:has-text(\"Confirm\")'); if(btn) btn.click();")
+                                    except Exception:
+                                        pass
                                 else:
                                     # Fallback to page-wide confirm button click
                                     await page.locator("button:has-text('Confirm'), .confirm-btn, [class*='confirm']").first.click()
