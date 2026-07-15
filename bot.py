@@ -22,6 +22,52 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 # Initialize Pyrogram Client
 app = Client("terabox_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
+import sys
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Path configuration for cookie refresher relative to bot.py
+BOT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(BOT_DIR)
+REFRESH_SCRIPT = os.path.join(ROOT_DIR, "refresh_cookies.py")
+
+if sys.platform == "win32":
+    VENV_PYTHON = os.path.join(ROOT_DIR, ".venv", "Scripts", "python.exe")
+else:
+    VENV_PYTHON = os.path.join(ROOT_DIR, ".venv", "bin", "python")
+
+python_exe = VENV_PYTHON if os.path.exists(VENV_PYTHON) else sys.executable
+
+async def trigger_cookie_refresh() -> bool:
+    """Runs the refresh_cookies.py script to refresh ndus cookie."""
+    logger.info(f"Triggering auto login / refresh script: {python_exe} {REFRESH_SCRIPT}")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            python_exe, REFRESH_SCRIPT, "--headless",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        stdout_str = stdout.decode("utf-8", errors="ignore")
+        stderr_str = stderr.decode("utf-8", errors="ignore")
+        
+        logger.info(f"Refresh Script stdout: {stdout_str}")
+        if proc.returncode == 0:
+            logger.info("Cookie refresh script ran successfully!")
+            # Reload env variables
+            load_dotenv(override=True)
+            global NDUS_COOKIE
+            NDUS_COOKIE = os.getenv("NDUS_COOKIE")
+            logger.info("Reloaded NDUS_COOKIE successfully!")
+            return True
+        else:
+            logger.error(f"Cookie refresh script failed (exit code {proc.returncode})")
+            logger.error(f"Stderr: {stderr_str}")
+    except Exception as e:
+        logger.error(f"Failed to execute cookie refresh: {e}", exc_info=True)
+    return False
+
 def get_terabox_data(surl: str):
     """
     Extracts the direct download link from TeraBox using curl_cffi.
@@ -199,6 +245,19 @@ async def handle_link(client, message: Message):
 
     try:
         data = get_terabox_data(surl)
+        
+        # Check if session cookie is invalid or expired
+        if data and data.get("errno") == -6:
+            await status_msg.edit_text("🔄 **Cookie expired/invalid!** Refreshing cookies automatically, please wait...")
+            success = await trigger_cookie_refresh()
+            if success:
+                await status_msg.edit_text("✅ **Cookies refreshed successfully!** Retrying extraction...")
+                await asyncio.sleep(1)
+                data = get_terabox_data(surl)
+            else:
+                await status_msg.edit_text("❌ **Auto cookie refresh failed!** Please log in manually or check logs.")
+                return
+
         if not data or data.get("errno") != 0 or not data.get("list"):
             await status_msg.edit_text("❌ Failed to extract. The file might be deleted or private.")
             return

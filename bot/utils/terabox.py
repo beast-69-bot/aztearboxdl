@@ -6,7 +6,7 @@ import random
 import asyncio
 from urllib.parse import urlparse
 from curl_cffi import requests as curl_requests
-from config import NDUS_COOKIE
+import config
 from bot.utils.progress import progress_callback
 from bot.utils.proxy_pool import fetch_fresh_proxies, get_proxy_dict
 
@@ -76,54 +76,94 @@ def _item_from_share_list_response(api_response) -> dict | None:
         "dlink": dlink,
     }
 
+def trigger_cookie_refresh():
+    import subprocess
+    import sys
+    print("[AUTO-REFRESH] Expired or invalid cookie detected. Running refresh_cookies.py...")
+    
+    # Locate refresh_cookies.py script dynamically
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    script_path = None
+    check_dir = current_dir
+    for _ in range(5):
+        temp_path = os.path.join(check_dir, "refresh_cookies.py")
+        if os.path.exists(temp_path):
+            script_path = temp_path
+            break
+        temp_path = os.path.join(check_dir, "aztearboxdl", "refresh_cookies.py")
+        if os.path.exists(temp_path):
+            script_path = temp_path
+            break
+        check_dir = os.path.dirname(check_dir)
+        
+    if not script_path:
+        script_path = "/home/root2/aztearboxdl/refresh_cookies.py"
+        
+    print(f"[AUTO-REFRESH] Running: {script_path}")
+    try:
+        res = subprocess.run([sys.executable, script_path, "--headless"], capture_output=True, text=True, timeout=120)
+        print(f"[AUTO-REFRESH] Output: {res.stdout.strip()}")
+        if res.stderr:
+            print(f"[AUTO-REFRESH] Error: {res.stderr.strip()}")
+            
+        config.reload_ndus()
+        print(f"[AUTO-REFRESH] Reloaded config. New NDUS_COOKIE: {config.NDUS_COOKIE[:15]}...")
+    except Exception as e:
+        print(f"[AUTO-REFRESH ERROR] Failed to execute refresh script: {e}")
+
 def check_ndus_cookie() -> bool:
     """
     Verifies if the configured NDUS_COOKIE is valid and active.
-    Returns True if valid, False otherwise.
+    If not, runs refresh_cookies.py and retries.
     """
-    if not NDUS_COOKIE:
-        print("❌ Error: NDUS_COOKIE is not configured in your .env file!")
-        return False
-
-    session = curl_requests.Session(impersonate="chrome110")
-    session.cookies.update({"ndus": NDUS_COOKIE})
-    
-    # Try calling the account space API first
-    try:
-        api_url = "https://dm.1024tera.com/api/box/space"
-        resp = session.get(api_url, headers=HEADERS, timeout=8)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("errno") == 0:
-                print("✅ NDUS_COOKIE is VALID (Space info retrieved successfully).")
-                return True
-    except Exception:
-        pass
-
-    # Fallback check: Request the main sharing link page and verify if we get redirected to a verify/login page
-    try:
-        test_url = "https://dm.1024tera.com/sharing/link?surl=tKDPsB5RNnjdWLwoLcCFyg"
-        resp = session.get(test_url, headers=HEADERS, timeout=8, allow_redirects=False)
-        if resp.status_code in [301, 302]:
-            redirect_target = resp.headers.get("Location", "").lower()
-            if "verify" in redirect_target or "login" in redirect_target:
-                print("❌ NDUS_COOKIE is INVALID/EXPIRED (Redirected to login/verify page).")
-                return False
-        if "need verify" in resp.text.lower() or '"errno":400141' in resp.text:
-            print("❌ NDUS_COOKIE is INVALID/EXPIRED (Hit verify wall).")
+    def _is_valid():
+        if not config.NDUS_COOKIE:
             return False
             
-        print("✅ NDUS_COOKIE appears VALID (Sharing page accessed without login/verify redirect).")
+        session = curl_requests.Session(impersonate="chrome110")
+        session.cookies.update({"ndus": config.NDUS_COOKIE})
+        
+        try:
+            api_url = "https://dm.1024tera.com/api/box/space"
+            resp = session.get(api_url, headers=HEADERS, timeout=8)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("errno") == 0:
+                    return True
+        except Exception:
+            pass
+            
+        try:
+            test_url = "https://dm.1024tera.com/sharing/link?surl=tKDPsB5RNnjdWLwoLcCFyg"
+            resp = session.get(test_url, headers=HEADERS, timeout=8, allow_redirects=False)
+            if resp.status_code in [301, 302]:
+                redirect_target = resp.headers.get("Location", "").lower()
+                if "verify" in redirect_target or "login" in redirect_target:
+                    return False
+            if "need verify" in resp.text.lower() or '"errno":400141' in resp.text:
+                return False
+            return True
+        except Exception:
+            return False
+
+    if _is_valid():
+        print("✅ NDUS_COOKIE is VALID.")
         return True
-    except Exception as e:
-        print(f"⚠️ NDUS_COOKIE validation connection failed: {e}")
-        return False
+        
+    print("❌ NDUS_COOKIE is INVALID/EXPIRED. Triggering auto-cookie-refresh...")
+    trigger_cookie_refresh()
+    
+    if _is_valid():
+        print("✅ NDUS_COOKIE is now VALID after auto-refresh.")
+        return True
+        
+    print("❌ NDUS_COOKIE is still INVALID after auto-refresh.")
+    return False
 
 def get_terabox_info(surl: str) -> dict | None:
     """
     Fetches file metadata from TeraBox using the public share URL ID.
-    First tries directly from VPS (since VPS is clean and unblocked).
-    If a verification wall is hit, falls back to rotating proxies.
+    First tries directly from VPS. If cookie errors occur, triggers auto-refresh and retries.
     """
     global vps_cached_proxies
     short = surl[1:] if surl.startswith("1") else surl
@@ -131,7 +171,7 @@ def get_terabox_info(surl: str) -> dict | None:
     # ── FIRST TRY: Direct VPS IP ─────────────────────────────────────
     print("Attempting direct connection from VPS IP...")
     session = curl_requests.Session(impersonate="chrome110")
-    session.cookies.update({"ndus": NDUS_COOKIE})
+    session.cookies.update({"ndus": config.NDUS_COOKIE})
     
     first_url = f"https://dm.1024tera.com/sharing/link?surl={short}"
     try:
@@ -139,7 +179,11 @@ def get_terabox_info(surl: str) -> dict | None:
         
         # Check if we were redirected to a login/verify page or hit verify wall
         if "verify" in response.url.lower() or "login" in response.url.lower() or "need verify" in response.text.lower() or '"errno":400141' in response.text:
-            print(f"Direct connection hit verification/login wall. Final URL: {response.url}, Status Code: {response.status_code}")
+            print(f"Direct connection hit verification/login wall. Triggering auto-cookie-refresh...")
+            trigger_cookie_refresh()
+            # Retry with new cookie
+            session.cookies.update({"ndus": config.NDUS_COOKIE})
+            response = session.get(first_url, headers=HEADERS, timeout=12)
         else:
             match = re.search(r'fn%28%22(.*?)%22%29', response.text)
             if match:
@@ -183,7 +227,7 @@ def get_terabox_info(surl: str) -> dict | None:
     
     for attempt in range(max_retries):
         session = curl_requests.Session(impersonate="chrome110")
-        session.cookies.update({"ndus": NDUS_COOKIE})
+        session.cookies.update({"ndus": config.NDUS_COOKIE})
         
         # Load or refresh proxies
         if not vps_cached_proxies:
@@ -253,7 +297,7 @@ async def download_file(dlink: str, filename: str, message, total_size: int) -> 
     filepath = f"downloads/{uuid.uuid4().hex[:8]}_{filename}"
 
     session = curl_requests.Session(impersonate="chrome110")
-    session.cookies.update({"ndus": NDUS_COOKIE})
+    session.cookies.update({"ndus": config.NDUS_COOKIE})
 
     headers = {
         "User-Agent": HEADERS["User-Agent"],
