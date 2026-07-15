@@ -437,8 +437,9 @@ async def perform_autologin():
 
             ndus_val, cookie_header = await collect_browser_session("Initial browser session")
             
-            # If visual check OR API check says we are logged in, trust it!
-            if is_logged_in or (cookie_header and urllib_verify_cookie_header(cookie_header)):
+            # We strictly require the API check to pass.
+            # If the API check fails (even if visual page seems active due to caching), we perform a fresh login.
+            if cookie_header and urllib_verify_cookie_header(cookie_header):
                 print("[SUCCESS] Browser session is already logged in and active!")
                 await context.close()
                 return ndus_val, cookie_header
