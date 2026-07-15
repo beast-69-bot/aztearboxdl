@@ -444,9 +444,20 @@ async def perform_autologin():
                 await context.close()
                 return ndus_val, cookie_header
 
-            print("[INFO] Browser session is not usable. Clearing expired cookies to perform clean login...")
-            await context.clear_cookies()
-            # Reload page so the form is clean and doesn't have stale/expired cookie states
+            print("[INFO] Browser session is not usable. Closing browser to wipe persistent profile...")
+            await context.close()
+            
+            # Wipe the profile directory to clear all stuck modals, redirections and cache
+            import shutil
+            shutil.rmtree(user_data_dir, ignore_errors=True)
+            print("[INFO] Persistent profile directory wiped successfully.")
+            
+            # Relaunch browser context completely clean
+            context = await p.chromium.launch_persistent_context(**context_args)
+            page = await context.new_page()
+            
+            # Reload page so it is clean
+            print("[INFO] Navigating to TeraBox...")
             await page.goto("https://www.terabox.com/", wait_until="domcontentloaded")
             await page.wait_for_timeout(3000)
         except Exception as e:
