@@ -576,9 +576,7 @@ async def perform_autologin():
                         await captcha_input.first.fill(code)
                         await page.wait_for_timeout(500)
                         
-                        # Press Enter in input box (in case it is supported by JS listener)
-                        await captcha_input.first.press("Enter")
-                        
+
                         try:
                             # Search for the Confirm button in closest ancestor div elements
                             confirm_btn = None
