@@ -263,8 +263,22 @@ async def perform_autologin():
             await page.wait_for_timeout(500)
             
             await page.locator(".btn-class-login").first.click()
-            print("[INFO] Credentials submitted. Waiting for authentication...")
-            await page.wait_for_timeout(4000)
+            print("[INFO] Credentials submitted. Waiting for authentication response...")
+            
+            # Poll for up to 15 seconds for captcha OR success cookies (prevents timeout failure on slow VPS)
+            for _ in range(30):
+                await page.wait_for_timeout(500)
+                
+                # Stop waiting if captcha is visible
+                captcha_input = page.locator("input[placeholder*='verification code']").first
+                if await captcha_input.count() > 0:
+                    break
+                    
+                # Stop waiting if ndus cookie is set
+                cookies = await context.cookies()
+                ndus_val = next((c["value"] for c in cookies if c["name"] == "ndus"), None)
+                if ndus_val:
+                    break
         except Exception as e:
             print(f"[ERROR] Failed to input login credentials: {e}")
             await context.close()
@@ -341,6 +355,14 @@ async def perform_autologin():
                     pass
             await context.close()
             return ndus_val
+            
+        # Save a debug screenshot to see what went wrong (e.g. invalid password, blocked, etc.)
+        debug_path = os.path.join(WORKSPACE_DIR, "debug_screenshot.png")
+        try:
+            await page.screenshot(path=debug_path)
+            print(f"[DEBUG] Saved failure screenshot to: {debug_path}")
+        except Exception:
+            pass
             
         await context.close()
         return None
