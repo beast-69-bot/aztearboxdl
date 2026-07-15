@@ -511,15 +511,30 @@ async def perform_autologin():
                 except Exception:
                     pass
                 
-                # Screenshot and notify bot of the captcha
+                # Extract captcha image directly from browser canvas memory to prevent cropping/cuts
                 captcha_img_path = os.path.join(WORKSPACE_DIR, "captcha.png")
                 try:
-                    await canvas_locator.screenshot(path=captcha_img_path)
-                except Exception:
+                    import base64
+                    base64_str = await page.evaluate("""() => {
+                        const canvas = document.querySelector('#canvas');
+                        return canvas ? canvas.toDataURL('image/png') : null;
+                    }""")
+                    if base64_str and "," in base64_str:
+                        img_data = base64.b64decode(base64_str.split(",")[1])
+                        with open(captcha_img_path, "wb") as f:
+                            f.write(img_data)
+                        print("[INFO] Successfully extracted raw captcha image from canvas memory.")
+                    else:
+                        raise Exception("Canvas image data is empty or invalid.")
+                except Exception as e:
+                    print(f"[WARN] Failed to extract canvas via memory: {e}. Falling back to screenshot...")
                     try:
-                        await page.screenshot(path=captcha_img_path)
+                        await canvas_locator.screenshot(path=captcha_img_path)
                     except Exception:
-                        pass
+                        try:
+                            await page.screenshot(path=captcha_img_path)
+                        except Exception:
+                            pass
                 
                 # Send captcha notification to Telegram Bot if available
                 telegram_send_photo(
