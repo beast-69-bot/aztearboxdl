@@ -71,31 +71,31 @@ def format_curl_proxy(proxy_str: str) -> dict:
 
 
 def _share_list_request(session, origin: str, short: str, js_token: str, timeout: int):
+    """Fetches share list ANONYMOUSLY (no cookie) to bypass errno 400141 block."""
     parsed = urlparse(origin)
     host = parsed.netloc
     api_url = f"{origin}/share/list"
     params = {
         "app_id": "250528",
         "jsToken": js_token,
-        "site_referer": "https://www.terabox.app/",
         "shorturl": short,
         "root": "1",
     }
+    # NOTE: No Cookie header here — anonymous call bypasses the 400141 verification block.
     api_headers = {
         "Host": host,
-        "User-Agent": HEADERS["User-Agent"],
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
         "X-Requested-With": "XMLHttpRequest",
-        "Referer": f"{origin}/sharing/link?surl={short}&clearCache=1",
-        "Content-Type": "application/x-www-form-urlencoded",
+        "Referer": f"{origin}/sharing/link?surl={short}",
         "Origin": origin,
     }
-    print(f"Fetching share list from {api_url} ...")
+    print(f"Fetching share list anonymously from {api_url} ...")
     return session.get(api_url, params=params, headers=api_headers, timeout=timeout)
 
 
 def _item_from_share_list_response(api_response) -> dict | None:
+    """Parses share list response. Returns item metadata even without dlink."""
     try:
         data = api_response.json()
     except Exception as err:
@@ -110,16 +110,55 @@ def _item_from_share_list_response(api_response) -> dict | None:
         return None
 
     item = data["list"][0]
-    dlink = item.get("dlink")
-    if not dlink:
-        print("Share list returned an item but no dlink.")
-        return None
-
     return {
         "filename": item.get("server_filename", "video.mp4"),
         "size": int(item.get("size", 0)),
-        "dlink": dlink,
+        "dlink": item.get("dlink", ""),   # may be empty for anonymous calls
+        "path": item.get("path", ""),
+        "fs_id": item.get("fs_id", ""),
     }
+
+
+def _get_dlink_via_filemetas(
+    session, origin: str, path: str, js_token: str, cookie_header: str, timeout: int = 12
+) -> str | None:
+    """
+    Fetches the premium download link (dlink) using /api/filemetas with auth cookie.
+    This endpoint is separate from the sharing API and is NOT affected by the
+    errno 400141 verification block that hits /sharing/link and /share/list.
+    """
+    import urllib.parse
+    target = urllib.parse.quote(f'["{path}"]')
+    api_url = f"{origin}/api/filemetas"
+    params = {
+        "app_id": "250528",
+        "jsToken": js_token,
+        "target": f'["{path}"]',
+        "dlink": "1",
+    }
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": f"{origin}/disk/home",
+        "Cookie": cookie_header,
+    }
+    print(f"Fetching premium dlink via /api/filemetas for path: {path[:60]} ...")
+    try:
+        resp = session.get(api_url, params=params, headers=headers, timeout=timeout)
+        data = resp.json()
+        errno = data.get("errno", -1)
+        if errno != 0:
+            print(f"filemetas returned errno={errno}, errmsg={data.get('errmsg')}")
+            return None
+        info_list = data.get("info", [])
+        if info_list and info_list[0].get("dlink"):
+            dlink = info_list[0]["dlink"]
+            print(f"Got premium dlink via filemetas: {dlink[:60]}...")
+            return dlink
+        print(f"filemetas response had no dlink. Keys: {list(data.keys())}")
+    except Exception as e:
+        print(f"filemetas request failed: {e}")
+    return None
 
 
 def trigger_cookie_refresh() -> bool:
@@ -180,45 +219,70 @@ def check_ndus_cookie() -> bool:
 
 
 def _extract_info_via_session(session, first_url: str, short: str, first_origin: str, cookie_header: str) -> dict | None:
+    """
+    Two-phase extraction strategy to bypass errno 400141:
+      Phase 1 — Anonymous: Fetch HTML page + call /share/list WITHOUT cookie.
+                           TeraBox allows anonymous access; cookie triggers verification block.
+      Phase 2 — Authenticated: Use cookie with /api/filemetas to get premium dlink.
+                               This endpoint is NOT affected by the sharing API block.
+    """
     page_origin = first_origin
     try:
-        page_headers = dict(HEADERS)
-        if cookie_header:
-            page_headers["Cookie"] = cookie_header
-        response = session.get(first_url, headers=page_headers, timeout=12, allow_redirects=False)
+        # ── PHASE 1: Anonymous HTML fetch → jsToken ──────────────────────
+        # IMPORTANT: No Cookie here. With cookie, /sharing/link returns errno 400141.
+        anon_page_headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        print(f"Fetching page anonymously (no cookie): {first_url}")
+        response = session.get(first_url, headers=anon_page_headers, timeout=12, allow_redirects=True)
 
-        if response.status_code in [301, 302]:
-            redirect_target = response.headers.get("Location", "")
-            print(f"Connection got redirect: {response.status_code} -> {redirect_target}")
-            if "verify" not in redirect_target.lower():
-                page_origin = _origin_from_url(redirect_target, page_origin)
-                response = session.get(redirect_target, headers=page_headers, timeout=12, allow_redirects=False)
+        if response.status_code not in [200]:
+            print(f"Anonymous page fetch failed: HTTP {response.status_code}")
+            return None
 
-        blocked = (
-            "verify" in getattr(response, "url", "").lower()
-            or "login" in getattr(response, "url", "").lower()
-            or "need verify" in response.text.lower()
-            or '"errno":400141' in response.text
-        )
-        if blocked:
-            print(f"Connection hit verification/login wall. Final URL: {getattr(response, 'url', '')}, Status Code: {response.status_code}")
+        # Check if we got JSON error instead of HTML (shouldn't happen without cookie)
+        if '"errno"' in response.text[:200]:
+            print(f"Anonymous page returned JSON error: {response.text[:200]}")
             return None
 
         match = re.search(r'fn%28%22(.*?)%22%29', response.text)
         if not match:
-            print("Connection did not return jsToken.")
+            print("jsToken not found in anonymous HTML page.")
             return None
 
         js_token = match.group(1)
-        print("Page token extraction successful.")
+        print(f"jsToken extracted (anonymous). Length: {len(js_token)}")
 
+        # ── PHASE 1b: Anonymous /share/list → file metadata ──────────────
+        # Also no cookie here. We confirmed this returns errno:0 with file info.
         api_response = _share_list_request(session, page_origin, short, js_token, timeout=12)
         item = _item_from_share_list_response(api_response)
-        if item:
-            item["referer"] = f"{page_origin}/sharing/link?surl={short}&clearCache=1"
-            item["origin"] = page_origin
-            print("Extraction successful.")
-            return item
+        if not item:
+            print("Anonymous share/list failed to return file metadata.")
+            return None
+
+        print(f"File metadata retrieved: '{item['filename']}' ({item['size']} bytes)")
+
+        # ── PHASE 2: Authenticated /api/filemetas → premium dlink ─────────
+        # Cookie is used HERE (not above). filemetas is NOT affected by sharing API block.
+        dlink = item.get("dlink", "")
+        if not dlink and item.get("path") and cookie_header:
+            print("No dlink in anonymous response. Fetching premium dlink via /api/filemetas...")
+            dlink = _get_dlink_via_filemetas(
+                session, page_origin, item["path"], js_token, cookie_header
+            )
+
+        if not dlink:
+            print("Could not obtain dlink from either share/list or filemetas.")
+            return None
+
+        item["dlink"] = dlink
+        item["referer"] = f"{page_origin}/sharing/link?surl={short}"
+        item["origin"] = page_origin
+        print(f"Extraction successful. dlink obtained.")
+        return item
+
     except Exception as e:
         print(f"Extraction attempt failed: {e}")
     return None
