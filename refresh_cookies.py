@@ -280,7 +280,6 @@ async def perform_autologin():
             try:
                 await page.screenshot(path=debug_path)
                 print(f"[DEBUG] Saved failure screenshot to: {debug_path}")
-                # Escape markdown special characters for Telegram compatibility
                 clean_msg = re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', error_msg)
                 telegram_send_photo(debug_path, f"❌ *TeraBox Auto\\-Login Failed\\!*\nError: {clean_msg}")
             except Exception as e:
@@ -288,27 +287,29 @@ async def perform_autologin():
             await context.close()
             return None
             
-        # 1. Check if the saved context session is already logged in
+        # 1. Navigate to TeraBox
+        print("[INFO] Navigating to TeraBox...")
+        try:
+            await page.goto("https://www.terabox.com/", wait_until="domcontentloaded")
+            await page.wait_for_timeout(3000) # Wait for page redirects and cookies to load
+        except Exception as e:
+            return await save_debug_and_exit(f"Navigation failed: {e}")
+            
+        # 2. Check if already logged in (extract cookies immediately after navigation)
         try:
             cookies = await context.cookies()
             ndus_val = next((c["value"] for c in cookies if c["name"] == "ndus"), None)
             if ndus_val and urllib_verify_ndus(ndus_val):
-                print("[SUCCESS] Saved browser session is already active and valid!")
+                print("[SUCCESS] Browser session is already logged in and valid!")
                 await context.close()
                 return ndus_val
         except Exception:
             pass
             
-        # 2. Perform Login Flow
-        print("[INFO] Navigating to TeraBox...")
-        try:
-            await page.goto("https://www.terabox.com/", wait_until="domcontentloaded")
-        except Exception as e:
-            return await save_debug_and_exit(f"Navigation failed: {e}")
-            
+        # 3. Perform Login Flow (if not logged in)
         try:
             login_btn = page.locator(".login-btn").first
-            await login_btn.wait_for(state="visible", timeout=10000)
+            await login_btn.wait_for(state="visible", timeout=5000)
             await login_btn.click()
             await page.wait_for_timeout(2000)
         except Exception:
@@ -333,7 +334,7 @@ async def perform_autologin():
             await page.locator(".btn-class-login").first.click()
             print("[INFO] Credentials submitted. Waiting for authentication response...")
             
-            # Poll for up to 15 seconds for captcha OR success cookies (prevents timeout failure on slow VPS)
+            # Poll for up to 15 seconds for captcha OR success cookies
             for _ in range(30):
                 await page.wait_for_timeout(500)
                 
@@ -350,7 +351,7 @@ async def perform_autologin():
         except Exception as e:
             return await save_debug_and_exit(f"Failed to input credentials: {e}")
             
-        # 3. Handle CAPTCHA / verification puzzle
+        # 4. Handle CAPTCHA / verification puzzle
         attempt_limit = 3
         for try_num in range(attempt_limit):
             captcha_input = page.locator("input[placeholder*='verification code']")
@@ -421,7 +422,7 @@ async def perform_autologin():
             else:
                 break
             
-        # 4. Success verification
+        # 5. Success verification
         cookies = await context.cookies()
         ndus_val = next((c["value"] for c in cookies if c["name"] == "ndus"), None)
         if ndus_val and urllib_verify_ndus(ndus_val):
