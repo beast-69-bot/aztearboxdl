@@ -576,16 +576,27 @@ async def perform_autologin():
                         await captcha_input.first.fill(code)
                         await page.wait_for_timeout(500)
                         
-                        # Submit by pressing Enter key in input field and clicking relative submit button
+                        # Press Enter in input box (in case it is supported by JS listener)
                         await captcha_input.first.press("Enter")
                         
                         try:
-                            # Try to click the confirm button specifically inside the same form as the input box
-                            confirm_btn = captcha_input.locator("xpath=ancestor::form").locator("button, input[type='submit'], .confirm-btn, [class*='confirm']").first
-                            if await confirm_btn.count() > 0:
+                            # Search for the Confirm button in closest ancestor div elements
+                            confirm_btn = None
+                            for level in range(1, 6):
+                                xpath_selector = f"xpath=ancestor::div[{level}]"
+                                btn = captcha_input.locator(xpath_selector).locator("button, input[type='submit'], .confirm-btn, [class*='confirm'], :has-text('Confirm')").first
+                                if await btn.count() > 0:
+                                    confirm_btn = btn
+                                    break
+                            
+                            if confirm_btn:
+                                print(f"[INFO] Clicking found confirm button at ancestor level...")
                                 await confirm_btn.click()
-                        except Exception:
-                            pass
+                            else:
+                                # Fallback to page-wide confirm button click
+                                await page.locator("button:has-text('Confirm'), .confirm-btn, [class*='confirm']").first.click()
+                        except Exception as e:
+                            print(f"[WARN] Failed to click confirm button: {e}")
                         
                         print("[INFO] Captcha submitted. Waiting for session initialization...")
                         
