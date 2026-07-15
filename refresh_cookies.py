@@ -138,6 +138,37 @@ def telegram_send_photo(photo_path, caption):
         print(f"[TELEGRAM ERROR] Failed to send photo: {e}")
     return False
 
+def parse_playwright_proxy(proxy_str):
+    if not proxy_str:
+        return None
+    proxy_str = proxy_str.strip()
+    
+    # 1. Check for format ip:port:username:password
+    parts = proxy_str.split(":")
+    if len(parts) == 4:
+        ip, port, user, pwd = parts
+        return {
+            "server": f"http://{ip}:{port}",
+            "username": user,
+            "password": pwd
+        }
+        
+    # 2. Check for format http://user:pass@ip:port
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(proxy_str)
+        if not parsed.scheme:
+            parsed = urlparse("http://" + proxy_str)
+        server = f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
+        res = {"server": server}
+        if parsed.username:
+            res["username"] = parsed.username
+        if parsed.password:
+            res["password"] = parsed.password
+        return res
+    except Exception:
+        return None
+
 def urllib_verify_ndus(ndus):
     """Verify if the ndus cookie is currently valid using urllib."""
     if not ndus:
@@ -265,37 +296,6 @@ def update_files(new_ndus):
             f.write(f"{new_ndus}\n")
         print("[SUCCESS] Updated faphouse_cookies.txt")
 
-def parse_playwright_proxy(proxy_str):
-    if not proxy_str:
-        return None
-    proxy_str = proxy_str.strip()
-    
-    # 1. Check for format ip:port:username:password
-    parts = proxy_str.split(":")
-    if len(parts) == 4:
-        ip, port, user, pwd = parts
-        return {
-            "server": f"http://{ip}:{port}",
-            "username": user,
-            "password": pwd
-        }
-        
-    # 2. Check for format http://user:pass@ip:port
-    from urllib.parse import urlparse
-    try:
-        parsed = urlparse(proxy_str)
-        if not parsed.scheme:
-            parsed = urlparse("http://" + proxy_str)
-        server = f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
-        res = {"server": server}
-        if parsed.username:
-            res["username"] = parsed.username
-        if parsed.password:
-            res["password"] = parsed.password
-        return res
-    except Exception:
-        return None
-
 async def perform_autologin():
     """Launch Playwright browser, type credentials, detect captcha and solve manually or via 2Captcha."""
     from playwright.async_api import async_playwright
@@ -343,16 +343,24 @@ async def perform_autologin():
         except Exception as e:
             return await save_debug_and_exit(f"Navigation failed: {e}")
             
-        # 2. Check if already logged in (extract cookies immediately after navigation without API check)
+        # 2. Check if already logged in (extract cookies immediately after navigation and verify it!)
         try:
             cookies = await context.cookies()
             ndus_val = next((c["value"] for c in cookies if c["name"] == "ndus"), None)
             if ndus_val:
-                print("[SUCCESS] Browser session is already logged in and active!")
-                await context.close()
-                return ndus_val
-        except Exception:
-            pass
+                print(f"[INFO] Found ndus cookie in browser session profile. Verifying validity...")
+                if urllib_verify_ndus(ndus_val):
+                    print("[SUCCESS] Browser session is already logged in and active!")
+                    await context.close()
+                    return ndus_val
+                else:
+                    print("[INFO] Browser session cookie is expired/invalid. Clearing cookies to perform fresh login...")
+                    await context.clear_cookies()
+                    # Reload page after clearing cookies so we see the login form
+                    await page.goto("https://www.terabox.com/", wait_until="domcontentloaded")
+                    await page.wait_for_timeout(3000)
+        except Exception as e:
+            print(f"[WARN] Error during session validation: {e}")
             
         # 3. Perform Login Flow (if not logged in)
         try:
@@ -492,6 +500,22 @@ async def main():
     if not USER_EMAIL or not USER_PASS:
         print("[ERROR] Credentials not found in .env. Please set TERABOX_EMAIL and TERABOX_PASSWORD.")
         sys.exit(1)
+        
+    # Configure global proxy for urllib calls if STATIC_PROXY is set
+    if STATIC_PROXY:
+        try:
+            proxy_opts = parse_playwright_proxy(STATIC_PROXY)
+            if proxy_opts:
+                proxy_url = proxy_opts['server']
+                if "username" in proxy_opts:
+                    server_clean = proxy_url.replace("http://", "").replace("https://", "")
+                    proxy_url = f"http://{proxy_opts['username']}:{proxy_opts['password']}@{server_clean}"
+                proxy_support = urllib.request.ProxyHandler({'http': proxy_url, 'https': proxy_url})
+                opener = urllib.request.build_opener(proxy_support)
+                urllib.request.install_opener(opener)
+                print(f"[INFO] Configured global proxy for urllib verification calls via STATIC_PROXY: {proxy_opts['server']}")
+        except Exception as e:
+            print(f"[WARN] Failed to configure global proxy for urllib: {e}")
         
     # Check if current cookie is still valid
     current_ndus = None
