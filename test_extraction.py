@@ -1,4 +1,5 @@
 import os
+import re
 from dotenv import load_dotenv
 import curl_cffi.requests as curl_requests
 
@@ -6,6 +7,7 @@ load_dotenv()
 
 NDUS_COOKIE = os.getenv("NDUS_COOKIE")
 STATIC_PROXY = os.getenv("STATIC_PROXY")
+
 
 def format_curl_proxy(proxy_str: str) -> dict:
     if not proxy_str:
@@ -30,105 +32,172 @@ def make_session():
     return session
 
 
-def do_get(label, session, url, headers):
-    print(f"\n  [{label}]")
-    print(f"  URL: {url}")
-    try:
-        resp = session.get(url, headers=headers, timeout=12, allow_redirects=True)
-        print(f"  Status: {resp.status_code}")
-        print(f"  Response: {resp.text[:400]}")
-        return resp
-    except Exception as e:
-        print(f"  ERROR: {e}")
-        return None
-
-
 def test_extract():
     surl = "6j9ZbdrBAAL6qvL70yPO2A"
+    domain = "https://dm.1024tera.com"
 
-    # Load full cookie header
-    cookie_header = ""
-    paths = ["terabox_cookie_header.txt", "../terabox_cookie_header.txt"]
-    for path in paths:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                cookie_header = f.read().strip()
-            break
-
-    if cookie_header:
-        print(f"[OK] Loaded full cookie header. Length: {len(cookie_header)}")
-    else:
-        cookie_header = f"ndus={NDUS_COOKIE}" if NDUS_COOKIE else ""
-        print("[WARN] Falling back to ndus only cookie")
-
+    print(f"Testing surl: {surl}")
+    print(f"Domain: {domain}")
     if STATIC_PROXY:
-        print(f"[OK] Using proxy: {STATIC_PROXY[:30]}...")
-    else:
-        print("[WARN] No proxy configured")
+        print(f"Proxy: {STATIC_PROXY[:30]}...")
 
-    # ─── BASE HEADERS (no cookie) ───────────────────────────────────────────
-    base_headers = {
+    # ── STEP 1: Anonymous HTML request ────────────────────────────────────
+    print("\n" + "="*60)
+    print("STEP 1: Fetch HTML page (NO cookie, anonymous)")
+    print("="*60)
+
+    html_headers = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
         "Upgrade-Insecure-Requests": "1",
     }
-    auth_headers = {**base_headers, "Cookie": cookie_header}
 
-    domains = [
-        "https://dm.1024tera.com",
-        "https://dm.terabox.com",
-    ]
+    html = None
+    session = make_session()
+    url = f"{domain}/sharing/link?surl={surl}"
+    try:
+        resp = session.get(url, headers=html_headers, timeout=15, allow_redirects=True)
+        print(f"Status: {resp.status_code}")
+        html = resp.text
+        print(f"HTML length: {len(html)} chars")
+        print(f"First 300 chars:\n{html[:300]}")
+    except Exception as e:
+        print(f"ERROR: {e}")
+        return
 
-    for domain in domains:
-        print("\n" + "="*60)
-        print(f"DOMAIN: {domain}")
-        print("="*60)
+    if not html or len(html) < 100:
+        print("ERROR: Got no HTML. Aborting.")
+        return
 
-        # ── TEST 1: Anonymous (no cookie) /sharing/link ──────────────────
-        print("\n--- TEST 1: Anonymous access /sharing/link ---")
-        do_get("no-cookie", make_session(),
-               f"{domain}/sharing/link?surl={surl}", base_headers)
-
-        # ── TEST 2: With cookie /sharing/link ────────────────────────────
-        print("\n--- TEST 2: Authenticated /sharing/link ---")
-        do_get("with-cookie", make_session(),
-               f"{domain}/sharing/link?surl={surl}", auth_headers)
-
-        # ── TEST 3: With cookie + Referer /sharing/link ──────────────────
-        print("\n--- TEST 3: Authenticated + Referer ---")
-        headers_with_ref = {
-            **auth_headers,
-            "Referer": f"https://www.terabox.com/sharing/link?surl={surl}",
-        }
-        do_get("with-referer", make_session(),
-               f"{domain}/sharing/link?surl={surl}", headers_with_ref)
-
-        # ── TEST 4: /share/list API directly ─────────────────────────────
-        print("\n--- TEST 4: /share/list API (direct JSON endpoint) ---")
-        api_headers = {
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": f"{domain}/sharing/link?surl={surl}",
-            "Cookie": cookie_header,
-        }
-        share_list_url = (
-            f"{domain}/share/list"
-            f"?app_id=250528"
-            f"&shorturl={surl}"
-            f"&root=1"
-        )
-        do_get("share/list no-jsToken", make_session(), share_list_url, api_headers)
-
-    # ── TEST 5: NO PROXY - direct request ────────────────────────────────
+    # ── STEP 2: Extract jsToken from HTML ─────────────────────────────────
     print("\n" + "="*60)
-    print("TEST 5: NO PROXY (direct connection to dm.1024tera.com)")
+    print("STEP 2: Extract jsToken from HTML")
     print("="*60)
-    session_no_proxy = curl_requests.Session(impersonate="chrome110")
-    # Do NOT set proxy
-    do_get("no-proxy", session_no_proxy,
-           f"https://dm.1024tera.com/sharing/link?surl={surl}", auth_headers)
+
+    js_token = None
+    patterns = [
+        r'jsToken\s*=\s*["\']([^"\']+)["\']',
+        r'"jsToken"\s*:\s*"([^"]+)"',
+        r'fn%28%22([^%]+)%22%29',
+        r'encodeURIComponent\("([^"]+)"\)',
+    ]
+    for pat in patterns:
+        m = re.search(pat, html)
+        if m:
+            js_token = m.group(1)
+            print(f"Found jsToken via pattern [{pat[:40]}...]:")
+            print(f"  jsToken = {js_token[:60]}...")
+            break
+
+    if not js_token:
+        print("WARNING: jsToken NOT found in HTML!")
+        # Print relevant sections for debugging
+        for keyword in ["jsToken", "token", "js_token", "__NEXT_DATA__", "initialState"]:
+            idx = html.lower().find(keyword.lower())
+            if idx >= 0:
+                print(f"\n  Found '{keyword}' at pos {idx}:")
+                print(f"  ...{html[max(0,idx-30):idx+100]}...")
+                break
+    else:
+        print(f"OK! jsToken extracted.")
+
+    # ── STEP 3: Extract shorturl from HTML ────────────────────────────────
+    print("\n" + "="*60)
+    print("STEP 3: Extract shorturl from HTML")
+    print("="*60)
+
+    shorturl = None
+    short_patterns = [
+        r'"shorturl"\s*:\s*"([^"]+)"',
+        r'shorturl["\s]*[:=]["\s]*["\']([^"\']+)["\']',
+        r'share_id["\s]*[:=]["\s]*["\']([^"\']+)["\']',
+    ]
+    for pat in short_patterns:
+        m = re.search(pat, html)
+        if m:
+            shorturl = m.group(1)
+            print(f"Found shorturl: {shorturl}")
+            break
+
+    if not shorturl:
+        shorturl = surl  # fallback to the original surl
+        print(f"WARNING: shorturl not found, using surl as fallback: {shorturl}")
+
+    # ── STEP 4: Try /share/list WITHOUT cookie ────────────────────────────
+    print("\n" + "="*60)
+    print("STEP 4: /share/list WITHOUT cookie (anonymous)")
+    print("="*60)
+
+    api_headers_anon = {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": f"{domain}/sharing/link?surl={surl}",
+    }
+
+    share_list_url = f"{domain}/share/list?app_id=250528&root=1&shorturl={shorturl}"
+    if js_token:
+        share_list_url += f"&jsToken={js_token}"
+
+    session2 = make_session()
+    try:
+        resp2 = session2.get(share_list_url, headers=api_headers_anon, timeout=12)
+        print(f"Status: {resp2.status_code}")
+        print(f"Response: {resp2.text[:600]}")
+    except Exception as e:
+        print(f"ERROR: {e}")
+
+    # ── STEP 5: Try /share/list WITH cookie ──────────────────────────────
+    print("\n" + "="*60)
+    print("STEP 5: /share/list WITH cookie (authenticated)")
+    print("="*60)
+
+    cookie_header = ""
+    for path in ["terabox_cookie_header.txt", "../terabox_cookie_header.txt"]:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                cookie_header = f.read().strip()
+            break
+    if not cookie_header and NDUS_COOKIE:
+        cookie_header = f"ndus={NDUS_COOKIE}"
+
+    api_headers_auth = {**api_headers_anon, "Cookie": cookie_header}
+    session3 = make_session()
+    try:
+        resp3 = session3.get(share_list_url, headers=api_headers_auth, timeout=12)
+        print(f"Status: {resp3.status_code}")
+        print(f"Response: {resp3.text[:600]}")
+    except Exception as e:
+        print(f"ERROR: {e}")
+
+    # ── STEP 6: Extract dlink directly from HTML ──────────────────────────
+    print("\n" + "="*60)
+    print("STEP 6: Look for dlink / download URL directly in HTML")
+    print("="*60)
+
+    dlink_patterns = [
+        r'"dlink"\s*:\s*"([^"]+)"',
+        r'"uk"\s*:\s*(\d+)',
+        r'"fs_id"\s*:\s*(\d+)',
+        r'"server_filename"\s*:\s*"([^"]+)"',
+        r'"size"\s*:\s*(\d+)',
+    ]
+    found_any = False
+    for pat in dlink_patterns:
+        m = re.search(pat, html)
+        if m:
+            print(f"  [{pat[:35]}] => {m.group(1)[:80]}")
+            found_any = True
+
+    if not found_any:
+        print("  No dlink/file metadata found directly in HTML.")
+        print("  (File info is likely loaded via XHR after page load)")
+
+        # Print any JSON-like structure we find
+        json_blocks = re.findall(r'window\.__[A-Z_]+__\s*=\s*(\{.{0,200})', html)
+        for i, block in enumerate(json_blocks[:3]):
+            print(f"\n  window.__VAR__[{i}]: {block[:150]}")
 
 
 if __name__ == "__main__":
