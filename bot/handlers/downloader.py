@@ -134,18 +134,15 @@ async def handle_link(client, message: Message):
     info = await asyncio.to_thread(get_terabox_info, surl)
 
     if not info:
-        # Check if cookie has expired/invalid
+        # Check if cookie has expired/invalid (internally triggers auto-refresh if needed)
         is_cookie_valid = await asyncio.to_thread(check_ndus_cookie)
-        if not is_cookie_valid:
-            await status.edit_text("🔄 **Cookie expired/invalid!** Refreshing cookies automatically, please wait...")
-            success = await trigger_cookie_refresh()
-            if success:
-                await status.edit_text("✅ **Cookies refreshed successfully!** Retrying extraction...")
-                await asyncio.sleep(1)
-                info = await asyncio.to_thread(get_terabox_info, surl)
-            else:
-                await status.edit_text("❌ **Auto cookie refresh failed!** Please log in manually or check logs.")
-                return
+        if is_cookie_valid:
+            await status.edit_text("✅ **Cookies refreshed successfully!** Retrying extraction...")
+            await asyncio.sleep(1)
+            info = await asyncio.to_thread(get_terabox_info, surl)
+        else:
+            await status.edit_text("❌ **Auto cookie refresh failed!** Please log in manually or check logs.")
+            return
 
     if not info:
         await status.edit_text("<b>✖️ ᴇxᴛʀᴀᴄᴛɪᴏɴ ꜰᴀɪʟᴇᴅ</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\nFile may be deleted or set to private.")

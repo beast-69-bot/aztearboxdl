@@ -76,7 +76,7 @@ def _item_from_share_list_response(api_response) -> dict | None:
         "dlink": dlink,
     }
 
-def trigger_cookie_refresh():
+def trigger_cookie_refresh() -> bool:
     import subprocess
     import sys
     print("[AUTO-REFRESH] Expired or invalid cookie detected. Running refresh_cookies.py...")
@@ -106,10 +106,13 @@ def trigger_cookie_refresh():
         if res.stderr:
             print(f"[AUTO-REFRESH] Error: {res.stderr.strip()}")
             
-        config.reload_ndus()
-        print(f"[AUTO-REFRESH] Reloaded config. New NDUS_COOKIE: {config.NDUS_COOKIE[:15]}...")
+        if res.returncode == 0:
+            config.reload_ndus()
+            print(f"[AUTO-REFRESH] Reloaded config. New NDUS_COOKIE: {config.NDUS_COOKIE[:15]}...")
+            return True
     except Exception as e:
         print(f"[AUTO-REFRESH ERROR] Failed to execute refresh script: {e}")
+    return False
 
 def check_ndus_cookie() -> bool:
     """
@@ -135,19 +138,25 @@ def check_ndus_cookie() -> bool:
         except Exception:
             pass
             
-        # 2. Try using a proxy if direct connection was blocked/failed
+        # 2. Try using proxies if direct connection was blocked/failed
         try:
             if not vps_cached_proxies:
                 vps_cached_proxies = fetch_fresh_proxies()
             if vps_cached_proxies:
-                selected_proxy = random.choice(vps_cached_proxies)
-                proxy = get_proxy_dict(selected_proxy)
-                print(f"[INFO] Direct cookie check blocked. Retrying validation using proxy: {selected_proxy}")
-                resp = session.get(api_url, headers=HEADERS, proxies=proxy, timeout=8)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get("errno") == 0:
-                        return True
+                # Try up to 5 different proxies
+                sample_size = min(5, len(vps_cached_proxies))
+                selected_proxies = random.sample(vps_cached_proxies, sample_size)
+                for selected_proxy in selected_proxies:
+                    proxy = get_proxy_dict(selected_proxy)
+                    print(f"[INFO] Direct cookie check blocked. Retrying validation using proxy: {selected_proxy}")
+                    try:
+                        resp = session.get(api_url, headers=HEADERS, proxies=proxy, timeout=5)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            if data.get("errno") == 0:
+                                return True
+                    except Exception:
+                        pass
         except Exception:
             pass
             
@@ -158,10 +167,13 @@ def check_ndus_cookie() -> bool:
         return True
         
     print("❌ NDUS_COOKIE is INVALID/EXPIRED. Triggering auto-cookie-refresh...")
-    trigger_cookie_refresh()
-    
-    if _is_valid():
+    success = trigger_cookie_refresh()
+    if success:
         print("✅ NDUS_COOKIE is now VALID after auto-refresh.")
+        return True
+        
+    if _is_valid():
+        print("✅ NDUS_COOKIE verified valid after fallback check.")
         return True
         
     print("❌ NDUS_COOKIE is still INVALID after auto-refresh.")
