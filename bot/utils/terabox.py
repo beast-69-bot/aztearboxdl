@@ -12,6 +12,22 @@ from bot.utils.progress import progress_callback
 
 
 def _auth_cookie_header() -> str:
+    # Check relative to file directory and current working directory
+    file_dir = os.path.dirname(os.path.abspath(__file__)) # bot/utils
+    project_root = os.path.dirname(os.path.dirname(file_dir)) # bot/utils -> bot -> root
+    paths = [
+        os.path.join(project_root, "terabox_cookie_header.txt"),
+        "terabox_cookie_header.txt"
+    ]
+    for path in paths:
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                    if content:
+                        return content
+            except Exception:
+                pass
     if config.NDUS_COOKIE:
         return f"ndus={config.NDUS_COOKIE}"
     return ""

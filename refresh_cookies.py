@@ -42,12 +42,14 @@ def manual_load_dotenv(dotenv_path):
 if os.path.isdir(os.path.join(WORKSPACE_DIR, "aztearboxdl")):
     # Local Windows Dev Environment
     AZ_ENV = os.path.join(WORKSPACE_DIR, "aztearboxdl", ".env")
+    AZ_COOKIE_TXT = os.path.join(WORKSPACE_DIR, "aztearboxdl", "terabox_cookie_header.txt")
     TERA_ENV = os.path.join(WORKSPACE_DIR, "TeraBox-Dl", ".env")
     TERA_PY = os.path.join(WORKSPACE_DIR, "TeraBox-Dl", "terabox.py")
     PARENT_DIR = os.path.dirname(WORKSPACE_DIR)
 else:
     # VPS Linux Environment (inside aztearboxdl root)
     AZ_ENV = os.path.join(WORKSPACE_DIR, ".env")
+    AZ_COOKIE_TXT = os.path.join(WORKSPACE_DIR, "terabox_cookie_header.txt")
     TERA_ENV = os.path.join(os.path.dirname(WORKSPACE_DIR), "TeraBox-Dl", ".env")
     TERA_PY = os.path.join(os.path.dirname(WORKSPACE_DIR), "TeraBox-Dl", "terabox.py")
     PARENT_DIR = os.path.dirname(WORKSPACE_DIR)
@@ -77,12 +79,16 @@ BOTS_DIR = find_bots_dir(PARENT_DIR)
 # Destination Paths to Update
 TARGET_PATHS = {
     "az_dotenv": AZ_ENV,
+    "az_cookie_txt": AZ_COOKIE_TXT,
     "tera_dotenv": TERA_ENV,
     "tera_py": TERA_PY,
     "fap1_dotenv": os.path.join(BOTS_DIR, "faphouse_bots", "faphouse1", ".env"),
     "fap2_dotenv": os.path.join(BOTS_DIR, "faphouse_bots", "faphouse2", ".env"),
     "fap3_dotenv": os.path.join(BOTS_DIR, "faphouse_bots", "faphouse3", ".env"),
     "faphouse_cookies_txt": os.path.join(BOTS_DIR, "faphouse_cookies.txt"),
+    "fap1_cookie_txt": os.path.join(BOTS_DIR, "faphouse_bots", "faphouse1", "terabox_cookie_header.txt"),
+    "fap2_cookie_txt": os.path.join(BOTS_DIR, "faphouse_bots", "faphouse2", "terabox_cookie_header.txt"),
+    "fap3_cookie_txt": os.path.join(BOTS_DIR, "faphouse_bots", "faphouse3", "terabox_cookie_header.txt"),
 }
 
 def telegram_send_photo(photo_path, caption):
@@ -326,7 +332,16 @@ def update_files(new_ndus, cookie_header=None):
     if update_env_variable(TARGET_PATHS["az_dotenv"], "NDUS_COOKIE", new_ndus):
         print("[SUCCESS] Updated aztearboxdl/.env")
     remove_env_variable(TARGET_PATHS["az_dotenv"], "TERABOX_COOKIE_HEADER")
-        
+    
+    # Write full cookie header to aztearboxdl/terabox_cookie_header.txt
+    if cookie_header:
+        try:
+            with open(TARGET_PATHS["az_cookie_txt"], "w", encoding="utf-8") as f:
+                f.write(cookie_header)
+            print("[SUCCESS] Updated aztearboxdl/terabox_cookie_header.txt")
+        except Exception as e:
+            print(f"[WARN] Failed to write az_cookie_txt: {e}")
+         
     # 2. Update TeraBox-Dl/.env
     if update_env_variable(TARGET_PATHS["tera_dotenv"], "COOKIE_JSON", f'{{"ndus": "{new_ndus}"}}'):
         print("[SUCCESS] Updated TeraBox-Dl/.env")
@@ -346,6 +361,18 @@ def update_files(new_ndus, cookie_header=None):
     for key in ["fap1_dotenv", "fap2_dotenv", "fap3_dotenv"]:
         if update_env_variable(TARGET_PATHS[key], "NDUS_COOKIE", new_ndus):
             print(f"[SUCCESS] Updated {os.path.basename(os.path.dirname(TARGET_PATHS[key]))}/.env")
+            
+    # Write full cookie header to faphouse bots terabox_cookie_header.txt files
+    if cookie_header:
+        for key in ["fap1_cookie_txt", "fap2_cookie_txt", "fap3_cookie_txt"]:
+            try:
+                dest_path = TARGET_PATHS[key]
+                if os.path.exists(os.path.dirname(dest_path)):
+                    with open(dest_path, "w", encoding="utf-8") as f:
+                        f.write(cookie_header)
+                    print(f"[SUCCESS] Updated {os.path.basename(os.path.dirname(dest_path))}/terabox_cookie_header.txt")
+            except Exception as e:
+                print(f"[WARN] Failed to write {key}: {e}")
             
     # 5. Update faphouse_cookies.txt
     txt_path = TARGET_PATHS["faphouse_cookies_txt"]
