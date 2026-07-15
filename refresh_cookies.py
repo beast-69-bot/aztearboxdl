@@ -600,8 +600,27 @@ async def perform_autologin():
                         
                         # Poll for up to 12 seconds for the ndus cookie to appear
                         cookie_found = False
-                        for _ in range(24):
+                        for i in range(24):
                             await page.wait_for_timeout(500)
+                            
+                            # Scan for visible error/toast/tip alerts on the page
+                            try:
+                                alert_selectors = [
+                                    "[class*='error']", "[class*='toast']", "[class*='message']", 
+                                    "[class*='tip']", ".alert", "[class*='warn']", "[class*='popup']"
+                                ]
+                                for sel in alert_selectors:
+                                    elements = page.locator(sel)
+                                    count = await elements.count()
+                                    for idx in range(count):
+                                        el = elements.nth(idx)
+                                        if await el.is_visible():
+                                            txt = (await el.text_content() or "").strip()
+                                            if txt and len(txt) < 150:  # avoid printing huge logs
+                                                print(f"[PAGE ALERT] {txt}")
+                            except Exception:
+                                pass
+                                
                             cookies = await context.cookies()
                             if any(c["name"] == "ndus" for c in cookies):
                                 cookie_found = True
