@@ -21,13 +21,21 @@ BOT_DIR = os.path.dirname(BOT_HANDLERS_DIR)
 BOT_ROOT_DIR = os.path.dirname(BOT_DIR)
 ROOT_DIR = os.path.dirname(BOT_ROOT_DIR)
 
-REFRESH_SCRIPT = os.path.join(ROOT_DIR, "refresh_cookies.py")
-BOT_ENV_PATH = os.path.join(BOT_ROOT_DIR, ".env")
-
-if sys.platform == "win32":
-    VENV_PYTHON = os.path.join(ROOT_DIR, ".venv", "Scripts", "python.exe")
+# Resolve refresh script path (support VPS and local layout)
+if os.path.exists(os.path.join(BOT_ROOT_DIR, "refresh_cookies.py")):
+    REFRESH_SCRIPT = os.path.join(BOT_ROOT_DIR, "refresh_cookies.py")
 else:
-    VENV_PYTHON = os.path.join(ROOT_DIR, ".venv", "bin", "python")
+    REFRESH_SCRIPT = os.path.join(ROOT_DIR, "refresh_cookies.py")
+
+# Resolve venv python path (support 'venv' and '.venv')
+if sys.platform == "win32":
+    VENV_PYTHON = os.path.join(BOT_ROOT_DIR, "venv", "Scripts", "python.exe")
+    if not os.path.exists(VENV_PYTHON):
+        VENV_PYTHON = os.path.join(ROOT_DIR, ".venv", "Scripts", "python.exe")
+else:
+    VENV_PYTHON = os.path.join(BOT_ROOT_DIR, "venv", "bin", "python")
+    if not os.path.exists(VENV_PYTHON):
+        VENV_PYTHON = os.path.join(ROOT_DIR, ".venv", "bin", "python")
 
 python_exe = VENV_PYTHON if os.path.exists(VENV_PYTHON) else sys.executable
 
