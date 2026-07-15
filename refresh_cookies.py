@@ -514,12 +514,12 @@ async def perform_autologin():
         # 4. Handle CAPTCHA / verification puzzle
         attempt_limit = 3
         for try_num in range(attempt_limit):
-            captcha_input = page.locator("input[placeholder*='verification code']")
+            captcha_input = page.locator("#box #input, #box input, input[placeholder*='verification code']")
             if await captcha_input.count() > 0 or "verification" in page.url.lower():
                 print(f"\n[WARNING] CAPTCHA / Verification challenge detected! (Attempt {try_num+1}/{attempt_limit})")
                 
                 # Locate the canvas captcha image
-                canvas_locator = page.locator("#canvas").first
+                canvas_locator = page.locator("#box #canvas, #box canvas, #canvas").first
                 try:
                     await canvas_locator.wait_for(state="visible", timeout=5000)
                 except Exception:
@@ -528,7 +528,7 @@ async def perform_autologin():
                 # HTML Diagnostic of the captcha container
                 try:
                     container_html = await page.evaluate("""() => {
-                        const canvas = document.querySelector('#canvas');
+                        const canvas = document.querySelector('#box #canvas, #box canvas, #canvas');
                         if (!canvas) return 'Canvas not found';
                         let parent = canvas.parentElement;
                         for (let i = 0; i < 5; i++) {
@@ -548,7 +548,7 @@ async def perform_autologin():
                 try:
                     import base64
                     base64_str = await page.evaluate("""() => {
-                        const canvas = document.querySelector('#canvas');
+                        const canvas = document.querySelector('#box #canvas, #box canvas, #canvas');
                         return canvas ? canvas.toDataURL('image/png') : null;
                     }""")
                     if base64_str and "," in base64_str:
@@ -600,19 +600,20 @@ async def perform_autologin():
                 
                 if code:
                     try:
-                        # Clear field first
-                        await captcha_input.first.click()
+                        # Target the specific visible input inside #box
+                        target_input = page.locator("#box #input, #box input").first
+                        await target_input.click()
                         await page.keyboard.press("Control+A")
                         await page.keyboard.press("Backspace")
                         await page.wait_for_timeout(200)
                         
                         # Type character-by-character with human delay to trigger React/Vue JS event handlers
-                        await captcha_input.first.type(code, delay=100)
+                        await target_input.type(code, delay=100)
                         await page.wait_for_timeout(500)
 
                         try:
-                            # Try direct ID selector first (from HTML diagnostic)
-                            confirm_btn = page.locator("button#confirm, #confirm").first
+                            # Try specific confirm button inside #box first
+                            confirm_btn = page.locator("#box #confirm, #box button, button#confirm, #confirm").first
                             if await confirm_btn.count() > 0:
                                 print("[INFO] Clicking confirm button via direct ID selector...")
                                 await confirm_btn.click()
@@ -621,7 +622,7 @@ async def perform_autologin():
                                 confirm_btn = None
                                 for level in range(1, 6):
                                     xpath_selector = f"xpath=ancestor::div[{level}]"
-                                    btn = captcha_input.locator(xpath_selector).locator("button, input[type='submit'], .confirm-btn, [class*='confirm'], :has-text('Confirm')").first
+                                    btn = target_input.locator(xpath_selector).locator("button, input[type='submit'], .confirm-btn, [class*='confirm'], :has-text('Confirm')").first
                                     if await btn.count() > 0:
                                         confirm_btn = btn
                                         break
