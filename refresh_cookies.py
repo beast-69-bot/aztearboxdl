@@ -511,6 +511,24 @@ async def perform_autologin():
                 except Exception:
                     pass
                 
+                # HTML Diagnostic of the captcha container
+                try:
+                    container_html = await page.evaluate("""() => {
+                        const canvas = document.querySelector('#canvas');
+                        if (!canvas) return 'Canvas not found';
+                        let parent = canvas.parentElement;
+                        for (let i = 0; i < 5; i++) {
+                            if (parent && (parent.className.includes('dialog') || parent.className.includes('modal') || parent.className.includes('verify') || parent.className.includes('captcha'))) {
+                                return parent.outerHTML;
+                            }
+                            if (parent) parent = parent.parentElement;
+                        }
+                        return canvas.parentElement ? canvas.parentElement.outerHTML : 'Parent not found';
+                    }""")
+                    print(f"[CAPTCHA HTML DIAGNOSTIC]:\n{container_html}\n")
+                except Exception as e:
+                    print(f"[WARN] Failed to get captcha HTML: {e}")
+                
                 # Extract captcha image directly from browser canvas memory to prevent cropping/cuts
                 captcha_img_path = os.path.join(WORKSPACE_DIR, "captcha.png")
                 try:
