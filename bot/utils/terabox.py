@@ -122,16 +122,31 @@ def check_ndus_cookie() -> bool:
             
         session = curl_requests.Session(impersonate="chrome110")
         session.cookies.update({"ndus": config.NDUS_COOKIE})
+        api_url = "https://www.terabox.app/api/list?dir=%2F&num=10&page=1"
         
+        # 1. Try direct connection
         try:
-            api_url = "https://www.terabox.app/api/list?dir=%2F&num=10&page=1"
-            resp = session.get(api_url, headers=HEADERS, timeout=8)
+            resp = session.get(api_url, headers=HEADERS, timeout=6)
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get("errno") == 0:
                     return True
         except Exception:
             pass
+            
+        # 2. Try using a proxy if direct connection was blocked/failed
+        try:
+            proxy = get_proxy_dict()
+            if proxy:
+                print("[INFO] Direct cookie check blocked. Retrying validation using proxy...")
+                resp = session.get(api_url, headers=HEADERS, proxies=proxy, timeout=8)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("errno") == 0:
+                        return True
+        except Exception:
+            pass
+            
         return False
 
     if _is_valid():
