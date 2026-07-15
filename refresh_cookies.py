@@ -58,6 +58,8 @@ manual_load_dotenv(AZ_ENV)
 USER_EMAIL = os.getenv("TERABOX_EMAIL")
 USER_PASS = os.getenv("TERABOX_PASSWORD")
 TWO_CAPTCHA_API_KEY = os.getenv("TWO_CAPTCHA_API_KEY")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = os.getenv("ADMIN_ID")
 
 # Find the AZ NETWORK TG BOTS directory dynamically (handles different casing/separators)
 def find_bots_dir(parent):
@@ -80,6 +82,56 @@ TARGET_PATHS = {
     "fap3_dotenv": os.path.join(BOTS_DIR, "faphouse_bots", "faphouse3", ".env"),
     "faphouse_cookies_txt": os.path.join(BOTS_DIR, "faphouse_cookies.txt"),
 }
+
+def telegram_send_photo(photo_path, caption):
+    """Send a photo/screenshot to the admin via the Telegram Bot API using urllib."""
+    if not BOT_TOKEN or not ADMIN_ID or ADMIN_ID == "0":
+        return False
+        
+    if not os.path.exists(photo_path):
+        return False
+        
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+    try:
+        with open(photo_path, "rb") as f:
+            file_content = f.read()
+            
+        boundary = "----TelegramFormBoundary1234567890"
+        headers = {
+            "Content-Type": f"multipart/form-data; boundary={boundary}"
+        }
+        
+        parts = []
+        # Chat ID field
+        parts.append(f"--{boundary}\r\n".encode())
+        parts.append('Content-Disposition: form-data; name="chat_id"\r\n\r\n'.encode())
+        parts.append(f"{ADMIN_ID}\r\n".encode())
+        
+        # Caption field
+        parts.append(f"--{boundary}\r\n".encode())
+        parts.append('Content-Disposition: form-data; name="caption"\r\n\r\n'.encode())
+        parts.append(f"{caption}\r\n".encode())
+        
+        # Photo field
+        parts.append(f"--{boundary}\r\n".encode())
+        parts.append(f'Content-Disposition: form-data; name="photo"; filename="{os.path.basename(photo_path)}"\r\n'.encode())
+        parts.append('Content-Type: image/png\r\n\r\n'.encode())
+        parts.append(file_content)
+        parts.append('\r\n'.encode())
+        
+        # End boundary
+        parts.append(f"--{boundary}--\r\n".encode())
+        
+        body = b"".join(parts)
+        req = urllib.request.Request(url, data=body, headers=headers)
+        with urllib.request.urlopen(req, timeout=15.0) as res:
+            res_data = json.loads(res.read().decode('utf-8'))
+            if res_data.get("ok"):
+                print(f"[TELEGRAM] Sent screenshot to admin {ADMIN_ID}.")
+                return True
+    except Exception as e:
+        print(f"[TELEGRAM ERROR] Failed to send photo: {e}")
+    return False
 
 def urllib_verify_ndus(ndus):
     """Verify if the ndus cookie is currently valid using urllib."""
@@ -298,26 +350,39 @@ async def perform_autologin():
                 except Exception:
                     pass
                 
+                # Screenshot and notify bot of the captcha
+                captcha_img_path = os.path.join(WORKSPACE_DIR, "captcha.png")
+                try:
+                    await canvas_locator.screenshot(path=captcha_img_path)
+                except Exception:
+                    try:
+                        await page.screenshot(path=captcha_img_path)
+                    except Exception:
+                        pass
+                
+                # Send captcha notification to Telegram Bot if available
+                telegram_send_photo(
+                    captcha_img_path, 
+                    f"⚠️ *TeraBox CAPTCHA Detected\\!* \\(Attempt {try_num+1}/{attempt_limit}\\)\nSolving automatically if 2Captcha API Key is set\\."
+                )
+                
                 code = None
                 # Check if 2Captcha API Key is set
                 if TWO_CAPTCHA_API_KEY:
                     print("[2CAPTCHA] Found API Key. Attempting automatic solving...")
                     try:
-                        image_bytes = await canvas_locator.screenshot()
+                        if os.path.exists(captcha_img_path):
+                            with open(captcha_img_path, "rb") as image_file:
+                                image_bytes = image_file.read()
+                        else:
+                            image_bytes = await canvas_locator.screenshot()
                         code = urllib_solve_2captcha(TWO_CAPTCHA_API_KEY, image_bytes)
                     except Exception as e:
                         print(f"[2CAPTCHA ERROR] Automatic solve failed: {e}")
                 
                 # Fallback to Manual terminal input if 2Captcha failed or is missing
                 if not code:
-                    captcha_img_path = os.path.join(WORKSPACE_DIR, "captcha.png")
-                    try:
-                        await canvas_locator.screenshot(path=captcha_img_path)
-                        print(f"[ACTION REQUIRED] Please open the image '{captcha_img_path}' to see the code.")
-                    except Exception as e:
-                        print(f"[WARN] Could not screenshot canvas: {e}. Screenshotting full page instead.")
-                        await page.screenshot(path=captcha_img_path)
-                    
+                    print(f"[ACTION REQUIRED] Please open the image '{captcha_img_path}' to see the code.")
                     if sys.stdin.isatty():
                         code = input(">>> Enter the 4-letter CAPTCHA code shown in the image: ").strip()
                     else:
@@ -361,6 +426,8 @@ async def perform_autologin():
         try:
             await page.screenshot(path=debug_path)
             print(f"[DEBUG] Saved failure screenshot to: {debug_path}")
+            # Notify Telegram Bot of the login failure
+            telegram_send_photo(debug_path, "❌ *TeraBox Auto-Login Failed\\!* View the attached failure screenshot for details\\.")
         except Exception:
             pass
             
