@@ -1,23 +1,28 @@
 import json
 import os
+import threading
 
 DB_FILE = "database.json"
+db_lock = threading.Lock()
 
 def load_db():
-    if not os.path.exists(DB_FILE):
-        return {"users": [], "stats": {"downloads": 0, "uploads": 0}}
-    try:
-        with open(DB_FILE, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {"users": [], "stats": {"downloads": 0, "uploads": 0}}
+    with db_lock:
+        if not os.path.exists(DB_FILE):
+            return {"users": [], "stats": {"downloads": 0, "uploads": 0}}
+        try:
+            with open(DB_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {"users": [], "stats": {"downloads": 0, "uploads": 0}}
 
 def save_db(data):
-    try:
-        with open(DB_FILE, "w") as f:
-            json.dump(data, f, indent=4)
-    except Exception as e:
-        print(f"Error saving database: {e}")
+    with db_lock:
+        try:
+            with open(DB_FILE, "w") as f:
+                json.dump(data, f, indent=4)
+        except Exception as e:
+            print(f"Error saving database: {e}")
+
 
 def add_user(user_id):
     db = load_db()

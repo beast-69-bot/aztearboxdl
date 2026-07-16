@@ -604,18 +604,22 @@ async def download_file(
             if isinstance(r, Exception):
                 raise Exception(f"Chunk {i} failed: {r}")
 
-        # ── Merge chunk files into final file ─────────────────────────────
+        # ── Merge chunk files into final file (Offloaded to thread) ───────
         print(f"Merging {num_workers} chunks → {filepath}")
-        with open(filepath, "wb") as out:
-            for cf in chunk_files:
-                with open(cf, "rb") as part:
-                    while True:
-                        data = part.read(4 * 1024 * 1024)
-                        if not data:
-                            break
-                        out.write(data)
-                os.remove(cf)
-                print(f"  Merged and removed: {cf}")
+        def merge_files():
+            with open(filepath, "wb") as out:
+                for cf in chunk_files:
+                    with open(cf, "rb") as part:
+                        while True:
+                            data = part.read(4 * 1024 * 1024)
+                            if not data:
+                                break
+                            out.write(data)
+                    os.remove(cf)
+                    print(f"  Merged and removed: {cf}")
+
+        await asyncio.to_thread(merge_files)
+
 
         elapsed = time.time() - start_time
         avg_speed = file_size / elapsed / 1024 / 1024 if elapsed > 0 else 0
