@@ -742,95 +742,162 @@ async def perform_autologin():
         except Exception as e:
             return await save_debug_and_exit(f"Failed during credentials submission: {e}")
 
-        # 5. Solve Login CAPTCHA (or IP-Unlock CAPTCHA that appeared after submission)
-        await solve_captcha_if_present("Login CAPTCHA")
-
-        # 5b. KEY FIX: After captcha solve, TeraBox may reset to the login form.
-        # If login form is still visible, re-submit credentials (up to 2 retries).
-        for relogin_attempt in range(2):
-            await page.wait_for_timeout(2000)
+        # Helper: Re-open login modal and re-submit credentials from any page state
+        async def redo_credentials(label="redo"):
+            print(f"[INFO] [{label}] Re-opening login modal and re-submitting credentials...")
+            # Check if email input is already visible
             try:
-                email_input_check = page.locator("input[placeholder*='email']").first
-                login_btn_check   = page.locator(".btn-class-login").first
-                login_form_visible = (
-                    await email_input_check.count() > 0 and
-                    await email_input_check.is_visible(timeout=1500)
+                email_already_visible = (
+                    await page.locator("input[placeholder*='email']").first.count() > 0 and
+                    await page.locator("input[placeholder*='email']").first.is_visible(timeout=1000)
                 )
             except Exception:
-                login_form_visible = False
+                email_already_visible = False
 
-            if not login_form_visible:
-                print("[INFO] Login form not visible — assuming login completed or redirecting.")
-                break
+            if not email_already_visible:
+                # Try to click the login button to re-open the modal
+                try:
+                    login_btn = page.locator(".login-btn").first
+                    if await login_btn.count() > 0 and await login_btn.is_visible(timeout=3000):
+                        await login_btn.click()
+                        await page.wait_for_timeout(2000)
+                    else:
+                        raise Exception("Login button not found")
+                except Exception:
+                    # Navigate fresh to TeraBox and try again
+                    print(f"[INFO] [{label}] Navigating fresh to TeraBox...")
+                    try:
+                        await page.goto("https://www.terabox.com/", wait_until="domcontentloaded", timeout=15000)
+                        await page.wait_for_timeout(2000)
+                        await solve_captcha_if_present(f"{label} IP-Unlock CAPTCHA")
+                    except Exception as e:
+                        print(f"[WARN] [{label}] Fresh navigation failed: {e}")
+                    try:
+                        login_btn2 = page.locator(".login-btn").first
+                        if await login_btn2.count() > 0 and await login_btn2.is_visible(timeout=4000):
+                            await login_btn2.click()
+                            await page.wait_for_timeout(2000)
+                    except Exception as e2:
+                        print(f"[WARN] [{label}] Could not click login button: {e2}")
 
-            print(f"[INFO] Login form still visible after captcha solve (attempt {relogin_attempt+1}). Re-submitting credentials...")
+            # Switch to email tab
+            for sel in [".other-item .logo >> nth=1", "text=Email", "div:has-text('Email')", ".other-item >> nth=1"]:
+                try:
+                    locator = page.locator(sel).first
+                    if await locator.count() > 0 and await locator.is_visible():
+                        await locator.click()
+                        await page.wait_for_timeout(1200)
+                        if await page.locator("input[placeholder*='email']").first.count() > 0:
+                            break
+                except Exception:
+                    pass
+
+            # Fill and submit credentials
             try:
-                await email_input_check.fill(USER_EMAIL)
+                await page.locator("input[placeholder*='email']").first.fill(USER_EMAIL)
                 await page.locator("input[type='password']").first.fill(USER_PASS)
                 await page.wait_for_timeout(500)
-                await login_btn_check.click()
-                print("[INFO] Credentials re-submitted. Waiting for response...")
+                await page.locator(".btn-class-login").first.click()
+                print(f"[INFO] [{label}] Credentials re-submitted. Waiting...")
                 await page.wait_for_timeout(3000)
-                # Solve any new CAPTCHA after re-submission
-                await solve_captcha_if_present(f"Re-login CAPTCHA attempt {relogin_attempt+1}")
             except Exception as e:
-                print(f"[WARN] Re-login attempt {relogin_attempt+1} failed: {e}")
-                break
+                print(f"[WARN] [{label}] Credential re-submit failed: {e}")
 
-        # 6. Poll for ndus cookie — extended to 30 seconds
+        # ─────────────────────────────────────────────────────────────────
+        # 5. Master retry loop: solve CAPTCHA → check ndus → re-login if needed
+        # Handles: wrong CAPTCHA → page reset → re-open modal → retry
+        # ─────────────────────────────────────────────────────────────────
+        MAX_LOGIN_ATTEMPTS = 3
         cookie_found = False
-        for i in range(60):
-            await page.wait_for_timeout(500)
 
-            # Scan for visible error/toast/tip alerts on the page
-            try:
-                alert_selectors = [
-                    "[class*='error']", "[class*='toast']", "[class*='message']",
-                    "[class*='tip']", ".alert", "[class*='warn']", "[class*='popup']"
-                ]
-                for sel in alert_selectors:
-                    elements = page.locator(sel)
-                    count = await elements.count()
-                    for idx in range(count):
-                        el = elements.nth(idx)
-                        if await el.is_visible():
-                            txt = (await el.text_content() or "").strip()
-                            if txt and len(txt) < 150:
-                                print(f"[PAGE ALERT] {txt}")
-            except Exception:
-                pass
+        for attempt in range(MAX_LOGIN_ATTEMPTS):
+            print(f"\n[INFO] === Login+CAPTCHA Attempt {attempt+1}/{MAX_LOGIN_ATTEMPTS} ===")
 
+            # Solve any active CAPTCHA
+            await solve_captcha_if_present(f"Login CAPTCHA (try {attempt+1})")
+
+            # Quick check for ndus (2 seconds grace)
+            await page.wait_for_timeout(2000)
             cookies = await context.cookies()
             if any(c["name"] == "ndus" for c in cookies):
                 cookie_found = True
+                print(f"[SUCCESS] ndus cookie found immediately after captcha solve (attempt {attempt+1})!")
                 break
+
+            # ndus not found — diagnose why:
+            try:
+                email_still_visible = (
+                    await page.locator("input[placeholder*='email']").first.count() > 0 and
+                    await page.locator("input[placeholder*='email']").first.is_visible(timeout=1000)
+                )
+            except Exception:
+                email_still_visible = False
+
+            if email_still_visible:
+                print(f"[INFO] Login form still visible (attempt {attempt+1}) — captcha may have unlocked form, need re-submit.")
+            else:
+                print(f"[INFO] Login form gone, ndus missing (attempt {attempt+1}) — likely wrong CAPTCHA caused page reset.")
+
+            # If more attempts remain, redo credentials flow
+            if attempt < MAX_LOGIN_ATTEMPTS - 1:
+                try:
+                    await redo_credentials(label=f"retry-{attempt+1}")
+                except Exception as e:
+                    print(f"[WARN] redo_credentials failed on attempt {attempt+1}: {e}")
+            else:
+                print(f"[WARN] Exhausted all {MAX_LOGIN_ATTEMPTS} login+captcha attempts.")
+
+        # 6. Extended ndus polling (15 seconds) — in case login completed but cookie is slow
+        if not cookie_found:
+            print("[INFO] Polling for ndus cookie (15 seconds)...")
+            for i in range(30):
+                await page.wait_for_timeout(500)
+                try:
+                    alert_selectors = [
+                        "[class*='error']", "[class*='toast']", "[class*='message']",
+                        "[class*='tip']", ".alert", "[class*='warn']"
+                    ]
+                    for sel in alert_selectors:
+                        elements = page.locator(sel)
+                        count = await elements.count()
+                        for idx in range(min(count, 3)):
+                            el = elements.nth(idx)
+                            if await el.is_visible():
+                                txt = (await el.text_content() or "").strip()
+                                # Skip spammy pricing text
+                                if txt and len(txt) < 100 and "price" not in txt.lower() and "login" not in txt.lower():
+                                    print(f"[PAGE ALERT] {txt}")
+                except Exception:
+                    pass
+                cookies = await context.cookies()
+                if any(c["name"] == "ndus" for c in cookies):
+                    cookie_found = True
+                    print("[INFO] ndus cookie found during extended polling!")
+                    break
 
         if cookie_found:
             print("[INFO] New ndus cookie successfully detected in browser context.")
         else:
-            # 6b. Emergency: try navigating directly to dashboard to trigger cookie set
-            print("[WARN] ndus not found yet. Navigating to dashboard to force cookie refresh...")
-            try:
-                await page.goto("https://www.terabox.com/main", wait_until="domcontentloaded", timeout=15000)
-                await page.wait_for_timeout(3000)
-            except Exception:
+            # 6b. Emergency: navigate directly to dashboard URLs to force cookie creation
+            print("[WARN] ndus not found. Trying direct dashboard navigation...")
+            for dashboard_url in ["https://www.terabox.com/main", "https://www.1024tera.com/main"]:
                 try:
-                    await page.goto("https://www.1024tera.com/main", wait_until="domcontentloaded", timeout=15000)
+                    await page.goto(dashboard_url, wait_until="domcontentloaded", timeout=15000)
                     await page.wait_for_timeout(3000)
-                except Exception:
-                    pass
-            cookies = await context.cookies()
-            if any(c["name"] == "ndus" for c in cookies):
-                cookie_found = True
-                print("[INFO] ndus cookie found after dashboard navigation!")
+                    cookies = await context.cookies()
+                    if any(c["name"] == "ndus" for c in cookies):
+                        cookie_found = True
+                        print(f"[INFO] ndus cookie found after navigating to {dashboard_url}!")
+                        break
+                except Exception as e:
+                    print(f"[WARN] Dashboard navigation to {dashboard_url} failed: {e}")
 
-        # 7. Success verification
+        # 7. Final session collection and verification
         ndus_val, cookie_header = await collect_browser_session("Post-login browser session")
         if cookie_header and (urllib_verify_cookie_header(cookie_header) or ndus_val):
-            # Capture and send successful logged-in state screenshot to Telegram
+            # Send success screenshot to Telegram
             success_screenshot_path = os.path.join(WORKSPACE_DIR, "debug_success.png")
             try:
-                # Wait 3 seconds for UI/dashboard elements to render cleanly
                 await page.wait_for_timeout(3000)
                 await page.screenshot(path=success_screenshot_path)
                 telegram_send_photo(success_screenshot_path, "🎉 *TeraBox Login Successful\\!* Saved cookies successfully\\.")
@@ -846,9 +913,9 @@ async def perform_autologin():
                     pass
             await context.close()
             return ndus_val, cookie_header
-             
-        # If we got here, verification failed
-        return await save_debug_and_exit("Login failed: ndus cookie was not found or was invalid after completing flow.")
+
+        # If we got here, all attempts failed
+        return await save_debug_and_exit("Login failed: ndus cookie was not found or was invalid after all retry attempts.")
 
 async def main():
     print("--- TeraBox Auto-Login & Cookie Refresh Utility ---")
