@@ -677,24 +677,28 @@ async def perform_autologin():
             await page.wait_for_timeout(3000)
         except Exception as e:
             print(f"[WARN] Error during session validation: {e}")
-        # 3. Check and solve IP Unlock CAPTCHA if active initially
-        await solve_captcha_if_present("IP Unlock CAPTCHA")
+        # 3. Pre-login CAPTCHA (some pages show it on load, solve if present)
+        await solve_captcha_if_present("Pre-login CAPTCHA")
 
         # 4. Perform Login Credentials Flow
         print("[INFO] Performing Login Credentials Flow...")
-        # 4. Perform Login Credentials Flow
-        print("[INFO] Performing Login Credentials Flow...")
         try:
-            # Check if login modal is already open
+            # Check if login modal/email input is already open
             email_input = page.locator("input[placeholder*='email']").first
             if await email_input.count() == 0:
                 login_btn = page.locator(".login-btn").first
                 await login_btn.wait_for(state="visible", timeout=6000)
                 await login_btn.click()
+                print("[INFO] Clicked login button. Waiting for modal or CAPTCHA...")
                 await page.wait_for_timeout(2000)
+
+                # ✅ KEY FIX: After clicking login button, IP Unlock CAPTCHA appears on
+                # suspicious VPS IPs. Solve it HERE before trying the email tab.
+                await solve_captcha_if_present("IP Unlock CAPTCHA (post-login-click)")
+
         except Exception as e:
             print(f"[INFO] Login button check skipped or handled: {e}")
-            
+
         print("[INFO] Opening Email login dialog...")
         try:
             # Try multiple selectors to open/switch to the Email login tab
@@ -706,7 +710,7 @@ async def perform_autologin():
                 "[class*='email']",
                 ".other-item >> nth=1"
             ]
-            
+
             email_tab_clicked = False
             for sel in email_selectors:
                 try:
@@ -715,7 +719,7 @@ async def perform_autologin():
                         print(f"[INFO] Trying to click email tab using selector: {sel}")
                         await locator.click()
                         await page.wait_for_timeout(1500)
-                        
+
                         # Verify if input fields are now visible
                         email_input = page.locator("input[placeholder*='email']").first
                         if await email_input.count() > 0:
@@ -724,18 +728,18 @@ async def perform_autologin():
                             break
                 except Exception:
                     pass
-                    
+
             if not email_tab_clicked:
                 raise Exception("Could not find or switch to email input fields using any known selector.")
         except Exception as e:
             return await save_debug_and_exit(f"Could not click email tab logo: {e}")
-            
+
         print("[INFO] Entering credentials...")
         try:
             await page.locator("input[placeholder*='email']").first.fill(USER_EMAIL)
             await page.locator("input[type='password']").first.fill(USER_PASS)
             await page.wait_for_timeout(500)
-            
+
             await page.locator(".btn-class-login").first.click()
             print("[INFO] Credentials submitted. Waiting for authentication response...")
             await page.wait_for_timeout(3000)
@@ -756,11 +760,14 @@ async def perform_autologin():
 
             if not email_already_visible:
                 # Try to click the login button to re-open the modal
+                login_clicked = False
                 try:
                     login_btn = page.locator(".login-btn").first
                     if await login_btn.count() > 0 and await login_btn.is_visible(timeout=3000):
                         await login_btn.click()
+                        print(f"[INFO] [{label}] Clicked login button. Waiting for modal or CAPTCHA...")
                         await page.wait_for_timeout(2000)
+                        login_clicked = True
                     else:
                         raise Exception("Login button not found")
                 except Exception:
@@ -769,16 +776,22 @@ async def perform_autologin():
                     try:
                         await page.goto("https://www.terabox.com/", wait_until="domcontentloaded", timeout=15000)
                         await page.wait_for_timeout(2000)
-                        await solve_captcha_if_present(f"{label} IP-Unlock CAPTCHA")
                     except Exception as e:
                         print(f"[WARN] [{label}] Fresh navigation failed: {e}")
                     try:
                         login_btn2 = page.locator(".login-btn").first
                         if await login_btn2.count() > 0 and await login_btn2.is_visible(timeout=4000):
                             await login_btn2.click()
+                            print(f"[INFO] [{label}] Clicked login button (after fresh nav). Waiting...")
                             await page.wait_for_timeout(2000)
+                            login_clicked = True
                     except Exception as e2:
                         print(f"[WARN] [{label}] Could not click login button: {e2}")
+
+                # ✅ KEY FIX: Solve IP Unlock CAPTCHA AFTER login button click,
+                # BEFORE trying email tab. This is when TeraBox shows the CAPTCHA.
+                if login_clicked:
+                    await solve_captcha_if_present(f"{label} IP-Unlock CAPTCHA")
 
             # Switch to email tab
             for sel in [".other-item .logo >> nth=1", "text=Email", "div:has-text('Email')", ".other-item >> nth=1"]:
