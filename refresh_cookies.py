@@ -804,55 +804,67 @@ async def perform_autologin():
 
 async def main():
     print("--- TeraBox Auto-Login & Cookie Refresh Utility ---")
-    if not USER_EMAIL or not USER_PASS:
-        print("[ERROR] Credentials not found in .env. Please set TERABOX_EMAIL and TERABOX_PASSWORD.")
-        sys.exit(1)
+    try:
+        if not USER_EMAIL or not USER_PASS:
+            print("[ERROR] Credentials not found in .env. Please set TERABOX_EMAIL and TERABOX_PASSWORD.")
+            sys.exit(1)
+            
+        # Configure global proxy for urllib calls if STATIC_PROXY is set
+        if STATIC_PROXY:
+            try:
+                proxy_opts = parse_playwright_proxy(STATIC_PROXY)
+                if proxy_opts:
+                    proxy_url = proxy_opts['server']
+                    if "username" in proxy_opts:
+                        server_clean = proxy_url.replace("http://", "").replace("https://", "")
+                        proxy_url = f"http://{proxy_opts['username']}:{proxy_opts['password']}@{server_clean}"
+                    proxy_support = urllib.request.ProxyHandler({'http': proxy_url, 'https': proxy_url})
+                    opener = urllib.request.build_opener(proxy_support)
+                    urllib.request.install_opener(opener)
+                    print(f"[INFO] Configured global proxy for urllib verification calls via STATIC_PROXY: {proxy_opts['server']}")
+            except Exception as e:
+                print(f"[WARN] Failed to configure global proxy for urllib: {e}")
+            
+        # Check if current cookie is still valid
+        current_ndus = None
+        current_cookie_header = None
+        if os.path.exists(TARGET_PATHS["az_dotenv"]):
+            with open(TARGET_PATHS["az_dotenv"], "r") as f:
+                content = f.read()
+            match = re.search(r"NDUS_COOKIE=(.*)", content)
+            if match:
+                current_ndus = match.group(1).strip()
+            match = re.search(r"TERABOX_COOKIE_HEADER=(.*)", content)
+            if match:
+                current_cookie_header = match.group(1).strip()
+                 
+        print("[INFO] Verifying current session cookie...")
+        if urllib_verify_cookie_header(current_cookie_header) or urllib_verify_ndus(current_ndus):
+            print("[SUCCESS] Current cookie is already valid! Synchronizing configs just in case...")
+            update_files(current_ndus, current_cookie_header)
+            return
+            
+        print("[INFO] Cookie is invalid or expired. Initializing automated login...")
+        result = await perform_autologin()
         
-    # Configure global proxy for urllib calls if STATIC_PROXY is set
-    if STATIC_PROXY:
-        try:
-            proxy_opts = parse_playwright_proxy(STATIC_PROXY)
-            if proxy_opts:
-                proxy_url = proxy_opts['server']
-                if "username" in proxy_opts:
-                    server_clean = proxy_url.replace("http://", "").replace("https://", "")
-                    proxy_url = f"http://{proxy_opts['username']}:{proxy_opts['password']}@{server_clean}"
-                proxy_support = urllib.request.ProxyHandler({'http': proxy_url, 'https': proxy_url})
-                opener = urllib.request.build_opener(proxy_support)
-                urllib.request.install_opener(opener)
-                print(f"[INFO] Configured global proxy for urllib verification calls via STATIC_PROXY: {proxy_opts['server']}")
-        except Exception as e:
-            print(f"[WARN] Failed to configure global proxy for urllib: {e}")
-        
-    # Check if current cookie is still valid
-    current_ndus = None
-    current_cookie_header = None
-    if os.path.exists(TARGET_PATHS["az_dotenv"]):
-        with open(TARGET_PATHS["az_dotenv"], "r") as f:
-            content = f.read()
-        match = re.search(r"NDUS_COOKIE=(.*)", content)
-        if match:
-            current_ndus = match.group(1).strip()
-        match = re.search(r"TERABOX_COOKIE_HEADER=(.*)", content)
-        if match:
-            current_cookie_header = match.group(1).strip()
-             
-    print("[INFO] Verifying current session cookie...")
-    if urllib_verify_cookie_header(current_cookie_header) or urllib_verify_ndus(current_ndus):
-        print("[SUCCESS] Current cookie is already valid! Synchronizing configs just in case...")
-        update_files(current_ndus, current_cookie_header)
-        return
-        
-    print("[INFO] Cookie is invalid or expired. Initializing automated login...")
-    result = await perform_autologin()
-    
-    if result:
-        new_ndus, cookie_header = result
-        print("[SUCCESS] Successfully logged in and retrieved valid ndus cookie!")
-        update_files(new_ndus, cookie_header)
-    else:
-        print("[ERROR] Failed to login or retrieve valid ndus cookie.")
-        sys.exit(1)
+        if result:
+            new_ndus, cookie_header = result
+            print("[SUCCESS] Successfully logged in and retrieved valid ndus cookie!")
+            update_files(new_ndus, cookie_header)
+        else:
+            print("[ERROR] Failed to login or retrieve valid ndus cookie.")
+            sys.exit(1)
+    finally:
+        # Cleanup temporary screenshots to preserve privacy and disk space
+        for temp_img in ["captcha.png", "debug_screenshot.png", "debug_success.png", "debug_typed.png"]:
+            path = os.path.join(WORKSPACE_DIR, temp_img)
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                    print(f"[CLEANUP] Deleted temporary screenshot: {temp_img}")
+                except Exception:
+                    pass
 
 if __name__ == "__main__":
     asyncio.run(main())
+
