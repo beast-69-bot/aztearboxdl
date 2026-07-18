@@ -16,11 +16,17 @@ async def start_command(client, message: Message):
         "👋 Welcome! Send me any TeraBox link, and I will upload the file directly here.\n\n"
         "▸ <b>ꜱᴘᴇᴇᴅ</b>: <code>Unlimited</code>\n"
         "▸ <b>ᴀᴅꜱ</b>: <code>Disabled</code>\n"
-        "▸ <b>ʜᴏꜱᴛɪɴɢ</b>: <code>Dedicated VPS</code>\n\n"
+        "▸ <b>ʜᴏꜱᴛɪɴɢ</b>: <code>Dedicated VPS</code>\n"
+        "▸ <b>ꜰʀᴇᴇ ʟɪᴍɪᴛ</b>: <code>10 links/day</code>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🎁 <b>FREE UNLIMITED BONUS!</b>\n"
+        "@azofficialmainbot se <b>FapHouse</b> ka koi bhi plan lo\n"
+        "→ Is bot pe <b>Unlimited downloads</b> FREE milenge! ♾️⭐\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "<i>Powered by AZ Network</i>"
     )
     await message.reply_text(text)
+
 
 
 @app.on_message(filters.command("myid") & filters.private)
