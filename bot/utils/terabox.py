@@ -441,8 +441,8 @@ def get_terabox_info(surl: str) -> dict | None:
 
 
 # ── Multi-Fragment Download Config ────────────────────────────────────────
-DOWNLOAD_WORKERS = 5          # parallel connections per file
-MIN_CHUNK_SIZE = 10 * 1024 * 1024   # 10 MB minimum per chunk
+DOWNLOAD_WORKERS = 8          # parallel connections per file (8x speed boost with cookies)
+MIN_CHUNK_SIZE = 2 * 1024 * 1024    # 2 MB minimum — parallel kicks in for most files
 
 
 def _build_dl_headers(referer=None, origin=None) -> dict:
