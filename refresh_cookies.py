@@ -936,7 +936,77 @@ async def main():
         if not USER_EMAIL or not USER_PASS:
             print("[ERROR] Credentials not found in .env. Please set TERABOX_EMAIL and TERABOX_PASSWORD.")
             sys.exit(1)
-            
+
+        # ── PROTECTION 1: Kill zombie Chromium/Playwright processes ──────────
+        # Prevents RAM exhaustion from previous failed login attempts
+        try:
+            import subprocess
+            result = subprocess.run(["pkill", "-f", "chromium"], capture_output=True)
+            killed = result.returncode == 0
+            if killed:
+                print("[CLEANUP] Killed existing Chromium processes to free RAM.")
+                import time; time.sleep(2)  # Give OS time to reclaim RAM
+        except Exception:
+            pass  # pkill not available on Windows or no chromium running
+
+        # ── PROTECTION 2: Cooldown lockfile (30 min between attempts) ────────
+        # Prevents rapid-fire auto-login loops that spike CPU/RAM and can flag VPS
+        COOLDOWN_MINUTES = 30
+        COOLDOWN_FILE = os.path.join(WORKSPACE_DIR, ".refresh_cooldown")
+        FAILURE_FILE = os.path.join(WORKSPACE_DIR, ".refresh_failures")
+        MAX_DAILY_FAILURES = 5
+
+        import time as _time
+        now_ts = _time.time()
+
+        # Check cooldown
+        if os.path.exists(COOLDOWN_FILE):
+            try:
+                with open(COOLDOWN_FILE, "r") as f:
+                    last_run_ts = float(f.read().strip())
+                elapsed_min = (now_ts - last_run_ts) / 60
+                if elapsed_min < COOLDOWN_MINUTES:
+                    remaining = int(COOLDOWN_MINUTES - elapsed_min)
+                    print(f"[COOLDOWN] Auto-login was run {int(elapsed_min)}m ago. "
+                          f"Waiting {remaining}m more. Exiting to prevent VPS overload.")
+                    print(f"[COOLDOWN] To force login, delete: {COOLDOWN_FILE}")
+                    sys.exit(0)  # Exit 0 so systemd doesn't count as crash
+            except Exception:
+                pass
+
+        # Check daily failure limit
+        if os.path.exists(FAILURE_FILE):
+            try:
+                with open(FAILURE_FILE, "r") as f:
+                    data = json.loads(f.read())
+                fail_date = data.get("date", "")
+                fail_count = data.get("count", 0)
+                today = _time.strftime("%Y-%m-%d")
+                if fail_date == today and fail_count >= MAX_DAILY_FAILURES:
+                    print(f"[PROTECTION] {fail_count}/{MAX_DAILY_FAILURES} login failures today. "
+                          f"STOPPING auto-login to protect VPS.")
+                    print(f"[PROTECTION] Manual fix needed: delete {FAILURE_FILE} after fixing credentials/proxy.")
+                    # Notify admin via Telegram
+                    try:
+                        telegram_send_message(
+                            f"⚠️ *AZ TeraBox Bot*: Auto-login STOPPED after {fail_count} failures today.\n"
+                            f"Cookie expired. Manual intervention needed!\n"
+                            f"SSH → `rm {FAILURE_FILE}` → `python refresh_cookies.py --headless`"
+                        )
+                    except Exception:
+                        pass
+                    sys.exit(0)
+            except Exception:
+                pass
+
+        # Write cooldown timestamp (so next invocation respects the 30 min wait)
+        try:
+            with open(COOLDOWN_FILE, "w") as f:
+                f.write(str(now_ts))
+        except Exception:
+            pass
+
+
         # Configure global proxy for urllib calls if STATIC_PROXY is set
         if STATIC_PROXY:
             try:
@@ -979,8 +1049,31 @@ async def main():
             new_ndus, cookie_header = result
             print("[SUCCESS] Successfully logged in and retrieved valid ndus cookie!")
             update_files(new_ndus, cookie_header)
+            # ✅ Success: reset failure counter + clear cooldown so next check is fast
+            try:
+                if os.path.exists(FAILURE_FILE):
+                    os.remove(FAILURE_FILE)
+                if os.path.exists(COOLDOWN_FILE):
+                    os.remove(COOLDOWN_FILE)
+            except Exception:
+                pass
         else:
             print("[ERROR] Failed to login or retrieve valid ndus cookie.")
+            # ❌ Failure: increment daily failure counter
+            try:
+                import time as _t
+                today = _t.strftime("%Y-%m-%d")
+                fail_data = {"date": today, "count": 1}
+                if os.path.exists(FAILURE_FILE):
+                    with open(FAILURE_FILE, "r") as f:
+                        existing = json.loads(f.read())
+                    if existing.get("date") == today:
+                        fail_data["count"] = existing.get("count", 0) + 1
+                with open(FAILURE_FILE, "w") as f:
+                    f.write(json.dumps(fail_data))
+                print(f"[PROTECTION] Failure count today: {fail_data['count']}/{MAX_DAILY_FAILURES}")
+            except Exception:
+                pass
             sys.exit(1)
     finally:
         # Cleanup temporary screenshots to preserve privacy and disk space
