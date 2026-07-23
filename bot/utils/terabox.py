@@ -105,7 +105,7 @@ def get_terabox_info(surl: str) -> dict | None:
         match = re.search(r"/s/([A-Za-z0-9_-]+)", surl)
         short = match.group(1) if match else surl
     else:
-        short = surl[1:] if surl.startswith("1") else surl
+        short = surl
     
     api_url = "https://apiv2.dlterabox.site/api/v3/terabox"
     test_link = f"https://1024terabox.com/s/{short}"
