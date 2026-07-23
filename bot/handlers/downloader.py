@@ -5,7 +5,7 @@ import asyncio
 from pyrogram import filters
 from pyrogram.types import Message
 from bot.client import app
-from bot.utils.terabox import get_terabox_info, download_file, check_ndus_cookie
+from bot.utils.terabox import get_terabox_info, download_file
 from bot.utils.progress import progress_callback
 from bot.utils.database import add_user, increment_stat, check_faphouse_premium
 from bot.utils.rate_limiter import RequestGuard, RateLimitExceeded
@@ -99,17 +99,7 @@ async def _process_download(client, message: Message, user_id: int, surl: str):
     info = await asyncio.to_thread(get_terabox_info, surl)
 
     if not info:
-        is_cookie_valid = await asyncio.to_thread(check_ndus_cookie)
-        if is_cookie_valid:
-            await status.edit_text("✅ **Cookies refreshed successfully!** Retrying extraction...")
-            await asyncio.sleep(1)
-            info = await asyncio.to_thread(get_terabox_info, surl)
-        else:
-            await status.edit_text("❌ **Auto cookie refresh failed!** Please log in manually or check logs.")
-            return
-
-    if not info:
-        await status.edit_text("<b>✖️ ᴇxᴛʀᴀᴄᴛɪᴏɴ ꜰᴀɪʟᴇᴅ</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\nFile may be deleted or set to private.")
+        await status.edit_text("<b>✖️ ᴇxᴛʀᴀᴄᴛɪᴏɴ ꜰᴀɪʟᴇᴅ</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\nCould not extract download link. The link might be expired, private, or invalid.")
         return
 
     filename  = info["filename"]

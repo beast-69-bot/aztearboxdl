@@ -11,28 +11,6 @@ import config
 from bot.utils.progress import progress_callback
 
 
-def _auth_cookie_header() -> str:
-    # Check relative to file directory and current working directory
-    file_dir = os.path.dirname(os.path.abspath(__file__)) # bot/utils
-    project_root = os.path.dirname(os.path.dirname(file_dir)) # bot/utils -> bot -> root
-    paths = [
-        os.path.join(project_root, "terabox_cookie_header.txt"),
-        "terabox_cookie_header.txt"
-    ]
-    for path in paths:
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    content = f.read().strip()
-                    if content:
-                        return content
-            except Exception:
-                pass
-    if config.NDUS_COOKIE:
-        return f"ndus={config.NDUS_COOKIE}"
-    return ""
-
-
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -40,13 +18,6 @@ HEADERS = {
     "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
 }
-
-
-def _origin_from_url(url: str, fallback: str) -> str:
-    parsed = urlparse(url)
-    if parsed.scheme and parsed.netloc:
-        return f"{parsed.scheme}://{parsed.netloc}"
-    return fallback
 
 
 def format_curl_proxy(proxy_str: str) -> dict:
@@ -68,337 +39,6 @@ def format_curl_proxy(proxy_str: str) -> dict:
         "http": formatted,
         "https": formatted
     }
-
-
-def _share_list_request(session, origin: str, short: str, js_token: str, timeout: int):
-    """Fetches share list ANONYMOUSLY (no cookie) to bypass errno 400141 block."""
-    parsed = urlparse(origin)
-    host = parsed.netloc
-    api_url = f"{origin}/share/list"
-    params = {
-        "app_id": "250528",
-        "jsToken": js_token,
-        "shorturl": short,
-        "root": "1",
-    }
-    # NOTE: No Cookie header here — anonymous call bypasses the 400141 verification block.
-    api_headers = {
-        "Host": host,
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer": f"{origin}/sharing/link?surl={short}",
-        "Origin": origin,
-    }
-    print(f"Fetching share list anonymously from {api_url} ...")
-    return session.get(api_url, params=params, headers=api_headers, timeout=timeout)
-
-
-def _item_from_share_list_response(api_response) -> dict | None:
-    """Parses share list response. Returns item metadata even without dlink."""
-    try:
-        data = api_response.json()
-    except Exception as err:
-        print(f"Share list JSON parse failed: HTTP {api_response.status_code}: {err}")
-        return None
-
-    if data.get("errno") != 0 or not data.get("list"):
-        print(
-            f"Share list failed: HTTP {api_response.status_code}, "
-            f"errno={data.get('errno')}, errmsg={data.get('errmsg')}"
-        )
-        return None
-
-    item = data["list"][0]
-    return {
-        "filename": item.get("server_filename", "video.mp4"),
-        "size": int(item.get("size", 0)),
-        "dlink": item.get("dlink", ""),   # may be empty for anonymous calls
-        "path": item.get("path", ""),
-        "fs_id": item.get("fs_id", ""),
-    }
-
-
-def _get_dlink_via_filemetas(
-    session, origin: str, path: str, js_token: str, cookie_header: str, timeout: int = 12
-) -> str | None:
-    """
-    Fetches the premium download link (dlink) using /api/filemetas with auth cookie.
-    This endpoint is separate from the sharing API and is NOT affected by the
-    errno 400141 verification block that hits /sharing/link and /share/list.
-    """
-    import urllib.parse
-    target = urllib.parse.quote(f'["{path}"]')
-    api_url = f"{origin}/api/filemetas"
-    params = {
-        "app_id": "250528",
-        "jsToken": js_token,
-        "target": f'["{path}"]',
-        "dlink": "1",
-    }
-    headers = {
-        "Accept": "application/json, text/plain, */*",
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer": f"{origin}/disk/home",
-        "Cookie": cookie_header,
-    }
-    print(f"Fetching premium dlink via /api/filemetas for path: {path[:60]} ...")
-    try:
-        resp = session.get(api_url, params=params, headers=headers, timeout=timeout)
-        data = resp.json()
-        errno = data.get("errno", -1)
-        if errno != 0:
-            print(f"filemetas returned errno={errno}, errmsg={data.get('errmsg')}")
-            return None
-        info_list = data.get("info", [])
-        if info_list and info_list[0].get("dlink"):
-            dlink = info_list[0]["dlink"]
-            print(f"Got premium dlink via filemetas: {dlink[:60]}...")
-            return dlink
-        print(f"filemetas response had no dlink. Keys: {list(data.keys())}")
-    except Exception as e:
-        print(f"filemetas request failed: {e}")
-    return None
-
-
-def trigger_cookie_refresh() -> bool:
-    import subprocess
-    import sys
-
-    print("[AUTO-REFRESH] Expired or invalid cookie detected. Running refresh_cookies.py...")
-
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    script_path = None
-    check_dir = current_dir
-    for _ in range(5):
-        temp_path = os.path.join(check_dir, "refresh_cookies.py")
-        if os.path.exists(temp_path):
-            script_path = temp_path
-            break
-        temp_path = os.path.join(check_dir, "aztearboxdl", "refresh_cookies.py")
-        if os.path.exists(temp_path):
-            script_path = temp_path
-            break
-        check_dir = os.path.dirname(check_dir)
-
-    if not script_path:
-        script_path = "/home/root2/aztearboxdl/refresh_cookies.py"
-
-    print(f"[AUTO-REFRESH] Running: {script_path}")
-    try:
-        res = subprocess.run(
-            [sys.executable, script_path, "--headless"],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        print(f"[AUTO-REFRESH] Output: {res.stdout.strip()}")
-        if res.stderr:
-            print(f"[AUTO-REFRESH] Error: {res.stderr.strip()}")
-
-        if res.returncode == 0:
-            config.reload_ndus()
-            print(f"[AUTO-REFRESH] Reloaded config. New NDUS_COOKIE: {config.NDUS_COOKIE[:15]}...")
-            return True
-    except Exception as e:
-        print(f"[AUTO-REFRESH ERROR] Failed to execute refresh script: {e}")
-    return False
-
-
-def check_ndus_cookie() -> bool:
-    """
-    Verifies if the configured NDUS_COOKIE is present.
-    If not, runs refresh_cookies.py to perform automated login.
-    """
-    if not config.NDUS_COOKIE:
-        print("NDUS_COOKIE is missing. Triggering auto-cookie-refresh...")
-        return trigger_cookie_refresh()
-        
-    print("NDUS_COOKIE is present. Allowing bot startup. Runtime check will auto-refresh if it is actually expired.")
-    return True
-
-
-def _extract_info_via_session(session, first_url: str, short: str, first_origin: str, cookie_header: str) -> dict | None:
-    """
-    Two-phase extraction strategy to bypass errno 400141:
-      Phase 1 — Anonymous: Fetch HTML page + call /share/list WITHOUT cookie.
-                           TeraBox allows anonymous access; cookie triggers verification block.
-      Phase 2 — Authenticated: Use cookie with /api/filemetas to get premium dlink.
-                               This endpoint is NOT affected by the sharing API block.
-    """
-    page_origin = first_origin
-    try:
-        # ── PHASE 1: Anonymous HTML fetch → jsToken ──────────────────────
-        # IMPORTANT: No Cookie here. With cookie, /sharing/link returns errno 400141.
-        anon_page_headers = {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-        print(f"Fetching page anonymously (no cookie): {first_url}")
-        response = session.get(first_url, headers=anon_page_headers, timeout=12, allow_redirects=True)
-
-        if response.status_code not in [200]:
-            print(f"Anonymous page fetch failed: HTTP {response.status_code}")
-            return None
-
-        # Check if we got JSON error instead of HTML (shouldn't happen without cookie)
-        if '"errno"' in response.text[:200]:
-            print(f"Anonymous page returned JSON error: {response.text[:200]}")
-            return None
-
-        match = re.search(r'fn%28%22(.*?)%22%29', response.text)
-        if not match:
-            print("jsToken not found in anonymous HTML page.")
-            return None
-
-        js_token = match.group(1)
-        print(f"jsToken extracted (anonymous). Length: {len(js_token)}")
-
-        # ── PHASE 1b: Anonymous /share/list → file metadata ──────────────
-        # Also no cookie here. We confirmed this returns errno:0 with file info.
-        api_response = _share_list_request(session, page_origin, short, js_token, timeout=12)
-        item = _item_from_share_list_response(api_response)
-        if not item:
-            print("Anonymous share/list failed to return file metadata.")
-            return None
-
-        print(f"File metadata retrieved: '{item['filename']}' ({item['size']} bytes)")
-
-        # ── PHASE 2: Authenticated /api/filemetas → premium dlink ─────────
-        # Cookie is used HERE (not above). filemetas is NOT affected by sharing API block.
-        dlink = item.get("dlink", "")
-        if not dlink and item.get("path") and cookie_header:
-            print("No dlink in anonymous response. Fetching premium dlink via /api/filemetas...")
-            dlink = _get_dlink_via_filemetas(
-                session, page_origin, item["path"], js_token, cookie_header
-            )
-
-        if not dlink:
-            print("Could not obtain dlink from either share/list or filemetas.")
-            return None
-
-        item["dlink"] = dlink
-        item["referer"] = f"{page_origin}/sharing/link?surl={short}"
-        item["origin"] = page_origin
-        print(f"Extraction successful. dlink obtained.")
-        return item
-
-    except Exception as e:
-        print(f"Extraction attempt failed: {e}")
-    return None
-
-
-
-async def _get_info_via_playwright(surl: str) -> dict | None:
-    """
-    Playwright-based fallback: launches a real browser session with the stored
-    cookie, navigates to the sharing URL, and intercepts the /share/list
-    network response to extract the dlink.
-
-    Optimized: exits immediately once dlink is captured (no full page wait).
-    """
-    try:
-        from playwright.async_api import async_playwright
-    except ImportError:
-        print("[PLAYWRIGHT] playwright not installed. Skipping browser fallback.")
-        return None
-
-    origin = "https://dm.1024tera.com"
-    share_url = f"{origin}/sharing/link?surl={surl}"
-    cookie_header = _auth_cookie_header()
-
-    print(f"[PLAYWRIGHT] Launching browser for: {share_url}")
-
-    captured = {}
-    dlink_event = asyncio.Event()  # signals early exit once dlink is found
-
-    # Build proxy config
-    proxy_cfg = None
-    if config.STATIC_PROXY:
-        parts = config.STATIC_PROXY.split(":")
-        if len(parts) == 4:
-            proxy_cfg = {
-                "server": f"http://{parts[0]}:{parts[1]}",
-                "username": parts[2],
-                "password": parts[3],
-            }
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
-            proxy=proxy_cfg,
-        )
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        )
-
-        # Inject auth cookies
-        if cookie_header:
-            cookies = []
-            for part in cookie_header.split(";"):
-                part = part.strip()
-                if "=" in part:
-                    name, value = part.split("=", 1)
-                    name = name.strip()
-                    value = value.strip()
-                    if name and value:
-                        # Add cookie for both root and subdomain
-                        for domain in [".1024tera.com", "dm.1024tera.com"]:
-                            cookies.append({"name": name, "value": value, "domain": domain, "path": "/"})
-            if cookies:
-                await context.add_cookies(cookies)
-                print(f"[PLAYWRIGHT] Injected {len(cookies)//2} cookies for 2 domains.")
-
-        page = await context.new_page()
-
-        # Intercept /share/list response — signal early exit on dlink
-        async def handle_response(response):
-            if "/share/list" in response.url and not dlink_event.is_set():
-                try:
-                    body = await response.json()
-                    if body.get("errno") == 0 and body.get("list"):
-                        item = body["list"][0]
-                        dlink = item.get("dlink", "")
-                        if dlink:
-                            captured["dlink"] = dlink
-                            captured["filename"] = item.get("server_filename", "video.mp4")
-                            captured["size"] = int(item.get("size", 0))
-                            captured["referer"] = share_url
-                            captured["origin"] = origin
-                            print(f"[PLAYWRIGHT] ✅ dlink captured: {dlink[:70]}...")
-                            dlink_event.set()  # signal early exit!
-                        else:
-                            print(f"[PLAYWRIGHT] /share/list OK but no dlink. Keys: {list(item.keys())}")
-                    else:
-                        print(f"[PLAYWRIGHT] /share/list errno={body.get('errno')}")
-                except Exception as e:
-                    print(f"[PLAYWRIGHT] Response parse error: {e}")
-
-        page.on("response", handle_response)
-
-        # Navigate — don't wait for full page load, just start loading
-        nav_task = asyncio.create_task(
-            page.goto(share_url, wait_until="domcontentloaded", timeout=20000)
-        )
-
-        # Wait for EITHER dlink captured OR 20s timeout
-        try:
-            await asyncio.wait_for(dlink_event.wait(), timeout=20)
-            print("[PLAYWRIGHT] dlink found — stopping page load early.")
-            nav_task.cancel()
-        except asyncio.TimeoutError:
-            print("[PLAYWRIGHT] 20s timeout reached without dlink.")
-            nav_task.cancel()
-
-        await browser.close()
-
-    if captured.get("dlink"):
-        print("[PLAYWRIGHT] Successfully extracted dlink via browser.")
-        return captured
-
-    print("[PLAYWRIGHT] Browser session did not yield a dlink.")
-    return None
 
 
 def _fetch_file_size_via_range(dlink: str) -> int:
@@ -455,10 +95,7 @@ def _parse_readable_size(readable_size: str) -> int:
 
 def get_terabox_info(surl: str) -> dict | None:
     """
-    Fetches file metadata from TeraBox.
-    Strategy:
-      1. Use the high-speed public API (apiv2.dlterabox.site) first.
-      2. If API fails, fall back to the custom local Playwright extractor.
+    Fetches file metadata from TeraBox using the high-speed public API.
     """
     # Robust shortcode extraction supporting both raw shortcodes and full URLs
     if "surl=" in surl:
@@ -470,11 +107,10 @@ def get_terabox_info(surl: str) -> dict | None:
     else:
         short = surl[1:] if surl.startswith("1") else surl
     
-    # ── Method 1: High-Speed Public API ────────────────────────────────
     api_url = "https://apiv2.dlterabox.site/api/v3/terabox"
     test_link = f"https://1024terabox.com/s/{short}"
     
-    print(f"[API EXTRACT] Attempting fast API extraction for: {test_link}")
+    print(f"[API EXTRACT] Attempting API extraction for: {test_link}")
     try:
         session = curl_requests.Session(impersonate="chrome110")
         if config.STATIC_PROXY:
@@ -512,42 +148,12 @@ def get_terabox_info(surl: str) -> dict | None:
         else:
             print(f"[API EXTRACT] API returned status code {resp.status_code}")
     except Exception as e:
-        print(f"[API EXTRACT] Fast API extraction failed: {e}")
-        
-    # ── Method 2: Local Cookie / Playwright Fallback ──────────────────
-    print("[API EXTRACT] Fast API failed. Falling back to local Cookie/Playwright extractor...")
-    
-    session = curl_requests.Session(impersonate="chrome110")
-    cookie_header = _auth_cookie_header()
-
-    first_origin = "https://dm.1024tera.com"
-    first_url = f"{first_origin}/sharing/link?surl={short}"
-
-    # ── Attempt 2.1: Python API via static proxy (fast path) ───────────────
-    if config.STATIC_PROXY:
-        print("Attempting extraction via STATIC_PROXY (Python API)...")
-        session.proxies = format_curl_proxy(config.STATIC_PROXY)
-        res = _extract_info_via_session(session, first_url, short, first_origin, cookie_header)
-        if res:
-            return res
-        print("STATIC_PROXY extraction failed. Falling back to Playwright...")
-
-    # ── Attempt 2.2: Playwright browser fallback (reliable) ────────────────
-    print("Python API failed. Falling back to Playwright browser extraction...")
-    try:
-        return asyncio.run(_get_info_via_playwright(short))
-    except RuntimeError:
-        # Already inside an event loop (called from async context)
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(_get_info_via_playwright(short))
-    except Exception as e:
-        print(f"Playwright fallback failed: {e}")
-        return None
-
+        print(f"[API EXTRACT] API extraction failed: {e}")
+    return None
 
 
 # ── Multi-Fragment Download Config ────────────────────────────────────────
-DOWNLOAD_WORKERS = 8          # parallel connections per file (8x speed boost with cookies)
+DOWNLOAD_WORKERS = 8          # parallel connections per file
 MIN_CHUNK_SIZE = 2 * 1024 * 1024    # 2 MB minimum — parallel kicks in for most files
 
 
@@ -557,7 +163,6 @@ def _build_dl_headers(referer=None, origin=None) -> dict:
         "Accept": "*/*",
         "Accept-Encoding": "identity",
         "Connection": "keep-alive",
-        "Cookie": _auth_cookie_header(),
     }
     if referer:
         h["Referer"] = referer
