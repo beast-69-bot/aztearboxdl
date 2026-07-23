@@ -401,23 +401,129 @@ async def _get_info_via_playwright(surl: str) -> dict | None:
     return None
 
 
+def _fetch_file_size_via_range(dlink: str) -> int:
+    """Sends a fast Range request (0-1) to get the exact file size in bytes from Content-Range header."""
+    try:
+        session = curl_requests.Session(impersonate="chrome110")
+        if config.STATIC_PROXY:
+            session.proxies = format_curl_proxy(config.STATIC_PROXY)
+        
+        headers = {
+            "User-Agent": HEADERS["User-Agent"],
+            "Range": "bytes=0-1"
+        }
+        # Send GET request with Range
+        resp = session.get(dlink, headers=headers, timeout=10, allow_redirects=True)
+        if resp.status_code == 206:
+            content_range = resp.headers.get("Content-Range", "")
+            if "/" in content_range:
+                total_bytes = int(content_range.split("/")[-1].strip())
+                print(f"[API EXTRACT] Extracted file size from Content-Range: {total_bytes} bytes")
+                return total_bytes
+        # Fallback to Content-Length
+        content_length = int(resp.headers.get("Content-Length", 0))
+        if content_length > 0:
+            return content_length
+    except Exception as e:
+        print(f"[API EXTRACT] Range size check failed: {e}")
+    return 0
+
+
+def _parse_readable_size(readable_size: str) -> int:
+    """Parses a string like '416.55 MB' or '1.2 GB' into bytes."""
+    if not readable_size:
+        return 0
+    try:
+        readable_size = readable_size.strip().upper()
+        match = re.match(r"([\d\.]+)\s*(KB|MB|GB|TB|B)?", readable_size)
+        if not match:
+            return 0
+        val = float(match.group(1))
+        unit = match.group(2)
+        if unit == "KB":
+            return int(val * 1024)
+        elif unit == "MB":
+            return int(val * 1024 * 1024)
+        elif unit == "GB":
+            return int(val * 1024 * 1024 * 1024)
+        elif unit == "TB":
+            return int(val * 1024 * 1024 * 1024 * 1024)
+        return int(val)
+    except Exception:
+        return 0
+
+
 def get_terabox_info(surl: str) -> dict | None:
     """
     Fetches file metadata from TeraBox.
     Strategy:
-      1. Python API via static proxy (anonymous HTML→jsToken→share/list→dlink) — fast (~4s)
-      2. Playwright browser fallback — reliable (~6s), bypasses all account-level blocks
-    Note: Direct VPS IP is skipped — TeraBox blocks it even for anonymous requests.
+      1. Use the high-speed public API (apiv2.dlterabox.site) first.
+      2. If API fails, fall back to the custom local Playwright extractor.
     """
-    short = surl[1:] if surl.startswith("1") else surl
-
+    # Robust shortcode extraction supporting both raw shortcodes and full URLs
+    if "surl=" in surl:
+        match = re.search(r"surl=([A-Za-z0-9_-]+)", surl)
+        short = match.group(1) if match else surl
+    elif "/s/" in surl:
+        match = re.search(r"/s/([A-Za-z0-9_-]+)", surl)
+        short = match.group(1) if match else surl
+    else:
+        short = surl[1:] if surl.startswith("1") else surl
+    
+    # ── Method 1: High-Speed Public API ────────────────────────────────
+    api_url = "https://apiv2.dlterabox.site/api/v3/terabox"
+    test_link = f"https://1024terabox.com/s/{short}"
+    
+    print(f"[API EXTRACT] Attempting fast API extraction for: {test_link}")
+    try:
+        session = curl_requests.Session(impersonate="chrome110")
+        if config.STATIC_PROXY:
+            session.proxies = format_curl_proxy(config.STATIC_PROXY)
+            
+        headers = {
+            "User-Agent": HEADERS["User-Agent"]
+        }
+        
+        resp = session.get(api_url, params={"url": test_link}, headers=headers, timeout=12)
+        if resp.status_code == 200:
+            data = resp.json()
+            file_info = data.get("data", {}).get("file", {})
+            dlink = file_info.get("download_url") or file_info.get("direct_link")
+            filename = file_info.get("file_name", "video.mp4")
+            readable_size = file_info.get("size_readable") or data.get("total_size")
+            
+            if dlink:
+                print(f"[API EXTRACT] [OK] API call successful. File: {filename}")
+                
+                # Fetch exact size in bytes via fast range check
+                exact_size = _fetch_file_size_via_range(dlink)
+                if exact_size == 0:
+                    exact_size = _parse_readable_size(readable_size)
+                    
+                return {
+                    "filename": filename,
+                    "size": exact_size,
+                    "dlink": dlink,
+                    "referer": f"https://1024terabox.com/sharing/link?surl={short}",
+                    "origin": "https://1024terabox.com"
+                }
+            else:
+                print(f"[API EXTRACT] API response did not contain download_url. Error: {data.get('error')}")
+        else:
+            print(f"[API EXTRACT] API returned status code {resp.status_code}")
+    except Exception as e:
+        print(f"[API EXTRACT] Fast API extraction failed: {e}")
+        
+    # ── Method 2: Local Cookie / Playwright Fallback ──────────────────
+    print("[API EXTRACT] Fast API failed. Falling back to local Cookie/Playwright extractor...")
+    
     session = curl_requests.Session(impersonate="chrome110")
     cookie_header = _auth_cookie_header()
 
     first_origin = "https://dm.1024tera.com"
     first_url = f"{first_origin}/sharing/link?surl={short}"
 
-    # ── Attempt 1: Python API via static proxy (fast path) ───────────────
+    # ── Attempt 2.1: Python API via static proxy (fast path) ───────────────
     if config.STATIC_PROXY:
         print("Attempting extraction via STATIC_PROXY (Python API)...")
         session.proxies = format_curl_proxy(config.STATIC_PROXY)
@@ -426,7 +532,7 @@ def get_terabox_info(surl: str) -> dict | None:
             return res
         print("STATIC_PROXY extraction failed. Falling back to Playwright...")
 
-    # ── Attempt 2: Playwright browser fallback (reliable) ────────────────
+    # ── Attempt 2.2: Playwright browser fallback (reliable) ────────────────
     print("Python API failed. Falling back to Playwright browser extraction...")
     try:
         return asyncio.run(_get_info_via_playwright(short))
@@ -497,21 +603,50 @@ async def download_file(
     filepath = f"downloads/{uuid.uuid4().hex[:8]}_{safe_name}"
     headers = _build_dl_headers(referer, origin)
 
-    # ── Step 1: HEAD request — check Range support & get content-length ──
+    # ── Step 1: Probe download URL for Range support & get content-length ──
     print(f"Probing download URL for Range support: {dlink[:80]}...")
+    supports_range = False
+    content_length = total_size or 0
+    
     try:
         head_session = curl_requests.Session(impersonate="chrome110")
+        if config.STATIC_PROXY:
+            head_session.proxies = format_curl_proxy(config.STATIC_PROXY)
         head_resp = await asyncio.to_thread(
-            head_session.head, dlink, headers=headers, timeout=15, allow_redirects=True
+            head_session.head, dlink, headers=headers, timeout=10, allow_redirects=True
         )
         accept_ranges = head_resp.headers.get("Accept-Ranges", "none").lower()
         content_length = int(head_resp.headers.get("Content-Length", total_size or 0))
         supports_range = accept_ranges == "bytes" and content_length > 0
-        print(f"Accept-Ranges: {accept_ranges} | Content-Length: {content_length} bytes | Range support: {supports_range}")
+        print(f"HEAD probe: Accept-Ranges: {accept_ranges} | Content-Length: {content_length} bytes | Range support: {supports_range}")
     except Exception as e:
-        print(f"HEAD request failed ({e}). Assuming no Range support.")
-        supports_range = False
-        content_length = total_size or 0
+        print(f"HEAD probe failed ({e}). Trying Range GET probe...")
+        
+    if not supports_range:
+        # Try a quick GET range probe (highly reliable fallback for Cloudflare Workers/Workers reverse proxy)
+        try:
+            get_session = curl_requests.Session(impersonate="chrome110")
+            if config.STATIC_PROXY:
+                get_session.proxies = format_curl_proxy(config.STATIC_PROXY)
+            
+            probe_headers = dict(headers)
+            probe_headers["Range"] = "bytes=0-1"
+            
+            probe_resp = await asyncio.to_thread(
+                get_session.get, dlink, headers=probe_headers, timeout=10, allow_redirects=True
+            )
+            if probe_resp.status_code == 206:
+                supports_range = True
+                content_range = probe_resp.headers.get("Content-Range", "")
+                if "/" in content_range:
+                    content_length = int(content_range.split("/")[-1].strip())
+                else:
+                    content_length = total_size or 0
+                print(f"Range GET probe: [OK] SUPPORTED! | Content-Length: {content_length} bytes")
+            else:
+                print(f"Range GET probe: [FAILED] NOT SUPPORTED (Status Code: {probe_resp.status_code})")
+        except Exception as pe:
+            print(f"Range GET probe failed: {pe}")
 
     # Use actual content length if we have it
     file_size = content_length or total_size
