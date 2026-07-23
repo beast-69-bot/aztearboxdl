@@ -176,8 +176,6 @@ def _download_chunk(dlink: str, start: int, end: int, headers: dict, filepath_ch
     chunk_headers = dict(headers)
     chunk_headers["Range"] = f"bytes={start}-{end}"
     session = curl_requests.Session(impersonate="chrome110")
-    if config.STATIC_PROXY:
-        session.proxies = format_curl_proxy(config.STATIC_PROXY)
     resp = session.get(dlink, headers=chunk_headers, stream=True, timeout=timeout)
     if resp.status_code not in (200, 206):
         raise Exception(f"Chunk download failed: HTTP {resp.status_code} for range {start}-{end}")
