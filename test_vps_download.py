@@ -1,13 +1,21 @@
-import requests
 import time
 import os
 import sys
+
+# Try importing curl_cffi which is installed in the venv
+try:
+    from curl_cffi import requests
+except ImportError:
+    print("[ERROR] curl_cffi is not installed. Installing it via pip first...")
+    import subprocess
+    subprocess.run([sys.executable, "-m", "pip", "install", "curl_cffi"])
+    from curl_cffi import requests
 
 def main():
     api_url = "https://apiv2.dlterabox.site/api/v3/terabox"
     test_link = "https://1024terabox.com/s/1Y3mGsppFPjSOhljtR33Shg"
     
-    print("=== VPS DOWNLOAD DIAGNOSTIC TEST ===")
+    print("=== VPS DOWNLOAD DIAGNOSTIC TEST (CURL_CFFI) ===")
     print(f"1. Fetching link from API...")
     try:
         r = requests.get(api_url, params={"url": test_link}, timeout=15)
